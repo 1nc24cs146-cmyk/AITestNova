@@ -1,0 +1,181 @@
+{
+  "activationEvents": [
+    "onView:aitestnova.main",
+    "onCommand:aitestnova.open",
+    "onCommand:aitestnova.generateFunction",
+    "onCommand:aitestnova.generateFile",
+    "onCommand:aitestnova.recordApi",
+    "onCommand:aitestnova.replayAll",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:python",
+    "onLanguage:java",
+    "onLanguage:go",
+    "onCommand:aitestnova.runUnitStability",
+    "onCommand:aitestnova.setAiApiKey",
+    "onCommand:aitestnova.clearAiApiKey",
+    "onCommand:aitestnova.addCIWorkflow",
+    "onCommand:aitestnova.setCoverageBaseline"
+  ],
+  "author": "NitinKumar Hiremath",
+  "categories": [
+    "Testing",
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aitestnova.open",
+        "title": "AITestNova: Open"
+      },
+      {
+        "command": "aitestnova.generateFunction",
+        "title": "AITestNova: Generate Test for This Function"
+      },
+      {
+        "command": "aitestnova.generateFile",
+        "title": "AITestNova: Generate Tests for This File"
+      },
+      {
+        "command": "aitestnova.recordApi",
+        "title": "AITestNova: Record API Test"
+      },
+      {
+        "command": "aitestnova.replayAll",
+        "title": "AITestNova: Replay Recorded API Tests"
+      },
+      {
+        "command": "aitestnova.runStableCheck",
+        "title": "AITestNova: Stability Check (Run 5 Times)"
+      },
+      {
+        "command": "aitestnova.runUnitStability",
+        "title": "AITestNova: Run Unit Tests Stability Check"
+      },
+      {
+        "command": "aitestnova.setAiApiKey",
+        "title": "AITestNova: Set AI API Key"
+      },
+      {
+        "command": "aitestnova.clearAiApiKey",
+        "title": "AITestNova: Clear AI API Key"
+      },
+      {
+        "command": "aitestnova.addCIWorkflow",
+        "title": "AITestNova: Add CI Workflow"
+      },
+      {
+        "command": "aitestnova.setCoverageBaseline",
+        "title": "AITestNova: Set Coverage Baseline"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "aitestnova.aiProvider": {
+          "default": "template",
+          "description": "Template needs no model. Ollama uses a local model. OpenAI uses an OpenAI-compatible API with a key saved in the OS keychain.",
+          "enum": [
+            "template",
+            "ollama",
+            "openai"
+          ],
+          "type": "string"
+        },
+        "aitestnova.ollamaModel": {
+          "default": "qwen2.5-coder:7b",
+          "description": "Ollama model used for test generation.",
+          "type": "string"
+        },
+        "aitestnova.ollamaUrl": {
+          "default": "http://localhost:11434",
+          "description": "Ollama base URL.",
+          "type": "string"
+        },
+        "aitestnova.stabilityRuns": {
+          "default": 5,
+          "description": "How many times a recorded test is replayed in a stability check.",
+          "type": "number"
+        },
+        "aitestnova.openaiBaseUrl": {
+          "default": "https://api.openai.com/v1",
+          "description": "Base URL for the OpenAI-compatible provider.",
+          "type": "string"
+        },
+        "aitestnova.openaiModel": {
+          "default": "gpt-4o-mini",
+          "description": "Model for the OpenAI-compatible provider.",
+          "type": "string"
+        },
+        "aitestnova.javaFramework": {
+          "default": "junit",
+          "description": "Java test framework for generated tests.",
+          "enum": [
+            "junit",
+            "testng"
+          ],
+          "type": "string"
+        },
+        "aitestnova.testCommand": {
+          "default": "",
+          "description": "Test command for unit stability runs. Leave blank to auto-detect (npm test, pytest, go test, mvn test).",
+          "type": "string"
+        }
+      },
+      "title": "AITestNova"
+    },
+    "views": {
+      "aitestnova": [
+        {
+          "id": "aitestnova.main",
+          "name": "AITestNova"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "icon": "media/aitestnova.svg",
+          "id": "aitestnova",
+          "title": "AITestNova"
+        }
+      ]
+    }
+  },
+  "description": "Generate unit tests, record API calls, replay them with mocks, and check coverage \u2014 in Antigravity. An original implementation inspired by the Keploy workflow; not affiliated with Keploy.",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.26.0",
+    "typescript": "^5.0.0"
+  },
+  "displayName": "AITestNova",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "icon": "media/icon.png",
+  "keywords": [
+    "test",
+    "testing",
+    "unit-test",
+    "api",
+    "record",
+    "replay",
+    "mock",
+    "coverage",
+    "antigravity",
+    "aitestnova"
+  ],
+  "license": "MIT",
+  "main": "./out/extension.js",
+  "name": "aitestnova",
+  "publisher": "nitinkumarhiremath",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1nc24cs146-cmyk"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  },
+  "version": "0.2.0"
+}
