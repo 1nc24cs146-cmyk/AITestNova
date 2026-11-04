@@ -15,7 +15,16 @@
     "onCommand:aitestnova.setAiApiKey",
     "onCommand:aitestnova.clearAiApiKey",
     "onCommand:aitestnova.addCIWorkflow",
-    "onCommand:aitestnova.setCoverageBaseline"
+    "onCommand:aitestnova.setCoverageBaseline",
+    "onCommand:aitestnova.generateFromSelection",
+    "onCommand:aitestnova.importTests",
+    "onCommand:aitestnova.exportTests",
+    "onCommand:aitestnova.commitTests",
+    "onCommand:aitestnova.createPRDescription",
+    "onCommand:aitestnova.checkStaleTests",
+    "onCommand:aitestnova.runMutationScore",
+    "onCommand:aitestnova.quarantineFlakyTests",
+    "onCommand:aitestnova.showTrends"
   ],
   "author": "NitinKumar Hiremath",
   "categories": [
@@ -67,6 +76,42 @@
       {
         "command": "aitestnova.setCoverageBaseline",
         "title": "AITestNova: Set Coverage Baseline"
+      },
+      {
+        "command": "aitestnova.generateFromSelection",
+        "title": "AITestNova: Generate Tests from Selected Comment/Spec"
+      },
+      {
+        "command": "aitestnova.importTests",
+        "title": "AITestNova: Import API Tests"
+      },
+      {
+        "command": "aitestnova.exportTests",
+        "title": "AITestNova: Export API Tests"
+      },
+      {
+        "command": "aitestnova.commitTests",
+        "title": "AITestNova: Commit Generated Tests (Local Git)"
+      },
+      {
+        "command": "aitestnova.createPRDescription",
+        "title": "AITestNova: Create PR Description"
+      },
+      {
+        "command": "aitestnova.checkStaleTests",
+        "title": "AITestNova: Check Stale Tests"
+      },
+      {
+        "command": "aitestnova.runMutationScore",
+        "title": "AITestNova: Run Mutation Score"
+      },
+      {
+        "command": "aitestnova.quarantineFlakyTests",
+        "title": "AITestNova: Quarantine Flaky Tests"
+      },
+      {
+        "command": "aitestnova.showTrends",
+        "title": "AITestNova: Show Trends"
       }
     ],
     "configuration": {
@@ -119,6 +164,16 @@
           "default": "",
           "description": "Test command for unit stability runs. Leave blank to auto-detect (npm test, pytest, go test, mvn test).",
           "type": "string"
+        },
+        "aitestnova.aiModels": {
+          "default": "",
+          "description": "Comma-separated models to try for test generation (max 3). The best-scoring output wins. Leave blank to use the single ollamaModel / openaiModel.",
+          "type": "string"
+        },
+        "aitestnova.mutationLimit": {
+          "default": 8,
+          "description": "Maximum mutants to run for a mutation score. Each mutant temporarily swaps one operator in the file, runs the test command, then restores the file.",
+          "type": "number"
         }
       },
       "title": "AITestNova"
@@ -141,7 +196,7 @@
       ]
     }
   },
-  "description": "Generate unit tests, record API calls, replay them with mocks, and check coverage \u2014 in Antigravity. An original implementation inspired by the Keploy workflow; not affiliated with Keploy.",
+  "description": "Generate unit tests, record and replay API calls with mocks, run test suites, check coverage, and see a local dashboard \u2014 in Antigravity. Multi-model test generation, stability checks, and CI workflow included.",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
@@ -177,5 +232,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.2.0"
+  "version": "0.3.4"
 }

@@ -12,6 +12,7 @@ export interface RecordedTest {
   headers: { key: string; value: string }[]; body: string;
   expectedStatus: number; expectedBody: string; recordedAt: string;
 }
+export interface ApiSuite { id: string; name: string; testIds: string[]; stopOnFailure: boolean; createdAt: string; }
 export interface ReplayResult {
   id: string; name: string; pass: boolean; expectedStatus: number;
   actualStatus: number | null; statusMatch: boolean; bodyMatch: boolean;
@@ -92,4 +93,12 @@ export async function stabilityCheck(test: RecordedTest, runs: number, mockMode:
   const results: ReplayResult[] = [];
   for (let i = 0; i < runs; i++) { results.push(await replayTest(test, mockMode, normalizeVolatile)); }
   return { stable: results.every((r) => r.pass), results };
+}
+
+// Readable, editable export: one YAML-ish block per recorded test.
+// This is deliberately simple (no YAML library in the extension) and
+// round-trips through the JSON import, not through YAML parsing.
+export function recordedTestsToYaml(tests: RecordedTest[]): string {
+  const esc = (s: string) => JSON.stringify(s);
+  return tests.map((t) => `- name: ${esc(t.name)}\n  method: ${t.method}\n  url: ${esc(t.url)}\n  expectedStatus: ${t.expectedStatus}\n  body: ${esc(t.body)}\n  expectedBody: ${esc(t.expectedBody)}`).join('\n') + (tests.length ? '\n' : '');
 }
