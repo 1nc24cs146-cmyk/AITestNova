@@ -12,6 +12,7 @@
 //     overloads and wrappers can legitimately differ.
 
 import { ParsedFunction } from './testgen';
+import { escapeRegExp, maskStringsAndComments, readBalancedParens, splitTopLevel } from './textutil';
 
 export interface TestSnapshot {
   sourceFile: string; functionName: string; params: string[];
@@ -62,34 +63,41 @@ export function checkSnapshots(
 
 // Heuristic: count the arguments in each call to a known function inside
 // a test file. A mismatch is only "possible" staleness.
+// The old version split the call text on plain commas and used the
+// function name unescaped in a regex, so add(foo(1), 2) was counted as
+// 1 argument (a false stale flag) and a name like "a$b" broke the regex.
+// Now calls are read with balanced parens, on text with strings and
+// comments masked out, so a call mentioned in a comment is not flagged.
 export function heuristicCheck(sourceFunctions: ParsedFunction[], testText: string): StaleResult[] {
   const results: StaleResult[] = [];
+  const language = sourceFunctions[0]?.language ?? 'javascript';
+  const masked = maskStringsAndComments(testText, language);
   for (const fn of sourceFunctions) {
-    const re = new RegExp(`\\b${fn.name}\\s*\\(([^)]*)\\)`, 'g');
+    const re = new RegExp(`\\b${escapeRegExp(fn.name)}\\s*\\(`, 'g');
     let m: RegExpExecArray | null;
-    let sawCall = false;
-    while ((m = re.exec(testText)) !== null) {
-      sawCall = true;
-      const args = m[1].trim() ? m[1].split(',').map((a) => a.trim()).filter(Boolean) : [];
+    while ((m = re.exec(masked)) !== null) {
+      const open = m.index + m[0].length - 1;
+      const bal = readBalancedParens(testText, open, language);
+      if (!bal) { continue; }
+      const args = bal.inside.trim() ? splitTopLevel(bal.inside) : [];
       if (args.length !== fn.params.length) {
         results.push({ functionName: fn.name, sourceFile: '', testFile: '', status: 'possible-stale', detail: `Test calls ${fn.name} with ${args.length} argument(s), but it now takes ${fn.params.length} (${fn.params.join(', ')}) — check whether the test is outdated.` });
         break;
       }
     }
-    void sawCall;
   }
   // Calls to names that are not functions in the source any more.
   const called = new Set<string>();
   const callRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
   let cm: RegExpExecArray | null;
-  while ((cm = callRe.exec(testText)) !== null) { called.add(cm[1]); }
+  while ((cm = callRe.exec(masked)) !== null) { called.add(cm[1]); }
   const known = new Set(sourceFunctions.map((f) => f.name));
   const ignored = new Set(['test', 'it', 'describe', 'expect', 'assert', 'assertTrue', 'assertNotNull', 'assertDoesNotThrow', 'console', 'require', 'print', 'len', 'range']);
   for (const name of called) {
     if (!known.has(name) && !ignored.has(name) && /^[a-z]/.test(name)) {
       // Only flag names that look like project functions: they appear in
       // an import/from line of the test file.
-      if (new RegExp(`import[^\\n]*\\b${name}\\b|from[^\\n]*import[^\\n]*\\b${name}\\b`).test(testText)) {
+      if (new RegExp(`import[^\\n]*\\b${escapeRegExp(name)}\\b|from[^\\n]*import[^\\n]*\\b${escapeRegExp(name)}\\b`).test(testText)) {
         results.push({ functionName: name, sourceFile: '', testFile: '', status: 'possible-stale', detail: `Test imports/calls ${name}, which is not a function in the source file any more — check whether the test is outdated.` });
       }
     }

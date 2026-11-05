@@ -4,17 +4,18 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { coverageDelta, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
+import { coverageDelta, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
 import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRequest, stabilityCheck, RecordedTest, ReplayResult } from './record';
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
 import { applyMutant, generateMutants, mutationScore } from './mutation';
 import { flakyTestIds, FlakyStat, quarantineSuiteName, recordFlakyStats, trendLines } from './flaky';
+import { escapeHtml } from './textutil';
 
 interface State { recorded: RecordedTest[]; extraPrompt: string; baselineCoverage?: number; lastCoverage?: number; lastReplay?: { pass: number; total: number; at: string }; normalizeVolatile?: boolean; suites?: ApiSuite[]; replayHistory?: { at: string; pass: number; total: number }[]; coverageHistory?: { at: string; value: number; rel: string }[]; stabilityHistory?: { at: string; pass: number; total: number }[]; testSnapshots?: TestSnapshot[]; flakyStats?: Record<string, FlakyStat>; quarantinedIds?: string[]; mutationHistory?: { at: string; file: string; score: number | null; killed: number; survived: number; unknown: number }[]; }
 function nonce(): string { return Array.from({ length: 32 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join(''); }
 
-async function tryAIMulti(context: vscode.ExtensionContext, fnCode: string, fileName: string): Promise<{ content: string; model: string; tried: string[] } | null> {
+async function tryAIMulti(context: vscode.ExtensionContext, fnCode: string, fileName: string): Promise<{ content: string; model: string; tried: string[] } | { failed: true; errors: string[] } | null> {
   const cfg = vscode.workspace.getConfiguration('aitestnova');
   const provider = cfg.get<string>('aiProvider') || 'template';
   if (provider !== 'ollama' && provider !== 'openai') { return null; }
@@ -23,6 +24,7 @@ async function tryAIMulti(context: vscode.ExtensionContext, fnCode: string, file
   const models = listed.length ? listed : [fallback];
   const prompt = `Write only unit tests for this code from ${fileName}. Include normal, empty and error cases. Do not explain.\n\n${fnCode}`;
   const candidates: { model: string; text: string }[] = [];
+  const errors: string[] = [];
   if (provider === 'ollama') {
     const url = (cfg.get<string>('ollamaUrl') || 'http://localhost:11434').replace(/\/$/, '');
     for (const model of models) {
@@ -30,27 +32,32 @@ async function tryAIMulti(context: vscode.ExtensionContext, fnCode: string, file
         const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 30000);
         const res = await fetch(`${url}/api/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt, stream: false }), signal: controller.signal });
         clearTimeout(timer);
-        if (!res.ok) { continue; }
+        if (!res.ok) { errors.push(`${model}: Ollama returned HTTP ${res.status}`); continue; }
         const data = await res.json() as { response?: string };
         if (data.response?.trim()) { candidates.push({ model, text: data.response }); }
-      } catch { /* try the next model */ }
+        else { errors.push(`${model}: Ollama returned no text`); }
+      } catch (e) { errors.push(`${model}: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`); }
     }
   } else {
     const key = await context.secrets.get('aitestnova.aiApiKey');
-    if (!key) { vscode.window.showWarningMessage('AITestNova: no AI API key saved. Run "AITestNova: Set AI API Key" first — it is stored in the OS keychain, never in a file.'); return null; }
+    if (!key) { return { failed: true, errors: ['No AI API key saved. Run "AITestNova: Set AI API Key" first — it is stored in the OS keychain, never in a file.'] }; }
     const baseUrl = (cfg.get<string>('openaiBaseUrl') || 'https://api.openai.com/v1').replace(/\/$/, '');
     for (const model of models) {
       try {
         const res = await fetch(`${baseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }) });
-        if (!res.ok) { continue; }
+        if (!res.ok) { errors.push(`${model}: API returned HTTP ${res.status}`); continue; }
         const data = await res.json() as { choices?: { message?: { content?: string } }[] };
         const text = data.choices?.[0]?.message?.content?.trim();
         if (text) { candidates.push({ model, text }); }
-      } catch { /* try the next model */ }
+        else { errors.push(`${model}: API returned no text`); }
+      } catch (e) { errors.push(`${model}: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`); }
     }
   }
   const best = pickBestCandidate(candidates);
-  return best ? { content: best.text, model: best.model, tried: models } : null;
+  if (best) { return { content: best.text, model: best.model, tried: models }; }
+  // No silent fallback: the caller tells the user the AI did not run
+  // and why, then uses the template.
+  return { failed: true, errors: errors.length ? errors : ['All models returned no text.'] };
 }
 
 class AITestNovaProvider implements vscode.WebviewViewProvider {
@@ -122,6 +129,10 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     const mutants = generateMutants(original, limit);
     if (!mutants.length) { this.healthText('Mutation score: no mutable operators found in this file (no + - * / comparisons, boolean operators, or true/false constants on their own lines). Nothing to measure, so no score is reported.'); return; }
     const cmd = await detectTestCommand(folder);
+    if (!cmd) {
+      this.healthText('Mutation score: no test command detected and none is set.\nThis folder has no package.json, go.mod, pom.xml, requirements.txt or pyproject.toml. Set your test command in Settings → AITestNova: Test Command (e.g. "npm test" or "pytest"), then re-run. AITestNova will not guess a command for an unknown stack.');
+      return;
+    }
     const runOnce = async (timeoutMs: number): Promise<'pass' | 'fail' | 'unknown'> => {
       try { await execAsync(cmd, { cwd: folder, timeout: timeoutMs }); return 'pass'; }
       catch (e) {
@@ -192,17 +203,21 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     const mut = (this.state.mutationHistory ?? []).slice(-5).map((m) => `${m.at.slice(0, 16)}: ${path.basename(m.file)} — ${m.score === null ? 'no score' : `${m.score}%`} (${m.killed} killed, ${m.survived} survived)`).join('\n') || 'No mutation runs yet.';
     this.healthText(`Trends (last ${hist.length} replay run(s), dashboard keeps 20):\n${trend}\n\nCoverage trend:\n${cov}\n\nFlaky tests (failed at least once):\n${flaky}\n\nQuarantined:\n${quarantined}\n\nRecent mutation scores:\n${mut}`);
   }
-  private readCoverageValue(folder: string): { value: number; rel: string } | null {
-    const candidates = ['coverage/coverage.xml', 'coverage/cobertura-coverage.xml', 'coverage/coverage-final.json', 'coverage/coverage-summary.json'];
+  private readCoverageValue(folder: string): { value: number; rel: string } | { error: string; rel: string } | null {
+    const candidates = ['coverage/coverage.xml', 'coverage/cobertura-coverage.xml', 'coverage/coverage-final.json', 'coverage/coverage-summary.json', 'coverage/coverage.out'];
     for (const rel of candidates) {
       const p = path.join(folder, rel);
       if (!fs.existsSync(p)) { continue; }
-      const text = fs.readFileSync(p, 'utf8');
-      const xml = rel.endsWith('.xml') ? parseCoverageXml(text) : null;
-      if (xml) { return { value: xml.lineRate, rel }; }
-      const jest = rel.endsWith('.json') ? parseJestCoverageJson(text) : null;
-      if (jest) { return { value: jest.pct, rel }; }
-      return null;
+      try {
+        const text = fs.readFileSync(p, 'utf8');
+        const xml = rel.endsWith('.xml') ? parseCoverageXml(text) : null;
+        if (xml) { return { value: xml.lineRate, rel }; }
+        const jest = rel.endsWith('.json') ? parseJestCoverageJson(text) : null;
+        if (jest) { return { value: jest.pct, rel }; }
+        const go = rel.endsWith('.out') ? parseGoCoverprofile(text) : null;
+        if (go) { return { value: go.pct, rel }; }
+        return { error: 'found but could not be read', rel };
+      } catch (e) { return { error: e instanceof Error ? e.message.split('\n')[0] : String(e), rel }; }
     }
     return null;
   }
@@ -222,6 +237,19 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     if (m.type === 'trends') { this.showTrends(); return; }
     if (m.type === 'quarantineFlaky') { await this.quarantineFlaky(); return; }
     if (m.type === 'restoreQuarantined') { await this.restoreQuarantined(); return; }
+    if (m.type === 'saveGenerated') { await saveGeneratedToTestFile(); return; }
+    if (m.type === 'updateExpected') {
+      const t = this.state.recorded.find((x) => x.id === m.id);
+      if (!t) { this.post('apiResult', { text: 'Test not found.' }); return; }
+      try {
+        const res = await sendRequest(t.method, t.url, t.headers, t.body);
+        t.expectedStatus = res.status;
+        t.expectedBody = res.bodyText;
+        await this.save(); this.postRecorded();
+        this.post('apiResult', { text: `Updated "${t.name}": expected status is now ${res.status} and the expected body was replaced with the latest response (${res.bodyText.length} characters). Replays will compare against the new response from now on.` });
+      } catch (e) { this.post('apiResult', { text: `Could not re-send "${t.name}": ${e instanceof Error ? e.message : String(e)} Expected values were not changed.` }); }
+      return;
+    }
     if (m.type === 'saveExtra') { this.state.extraPrompt = String(m.extra || ''); await this.save(); return; }
     if (m.type === 'generateFile') { await generateForFile(this.state.extraPrompt); return; }
     if (m.type === 'sendRecord') {
@@ -250,7 +278,7 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
         this.state.replayHistory = [...(this.state.replayHistory ?? []), this.state.lastReplay].slice(-20); await this.save();
         this.post('apiResult', { text: this.summary(results) + (skipped ? `\nSkipped ${skipped} quarantined (flaky) test(s) — run the "${quarantineSuiteName()}" suite to check them.` : '') });
       } else {
-        const runs = vscode.workspace.getConfiguration('aitestnova').get<number>('stabilityRuns') || 5;
+        const runs = Math.max(1, vscode.workspace.getConfiguration('aitestnova').get<number>('stabilityRuns') || 5);
         const lines: string[] = [];
         for (const t of this.state.recorded) { const s = await stabilityCheck(t, runs, mock, Boolean(m.normalize)); await this.recordFlaky(s.results); lines.push(`${s.stable ? 'STABLE' : 'FLAKY'} ${t.name} — ${s.results.filter((r) => r.pass).length}/${runs} passed`); }
         this.post('apiResult', { text: lines.join('\n') || 'No recorded tests.' });
@@ -274,6 +302,7 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
       if (!folder) { this.post('covResult', { text: 'Open a workspace folder first.' }); return; }
       const found = this.readCoverageValue(folder);
       if (!found) { this.post('covResult', { text: 'No coverage file found in coverage/. Run your tests with coverage first, e.g. jest --coverage or pytest --cov.' }); return; }
+      if ('error' in found) { this.post('covResult', { text: `Coverage file ${found.rel} was found but could not be read (${found.error}). Re-run your tests with coverage to regenerate it — AITestNova will not invent a number from a broken file.` }); return; }
       this.state.lastCoverage = found.value;
       this.state.coverageHistory = [...(this.state.coverageHistory ?? []), { at: new Date().toISOString(), value: found.value, rel: found.rel }].slice(-20); await this.save();
       if (m.type === 'coverageBaseline') { this.state.baselineCoverage = found.value; await this.save(); this.post('covResult', { text: `Baseline set: ${found.value}% from ${found.rel}. Generate or change tests, re-run with coverage, then check the delta.` }); return; }
@@ -312,19 +341,21 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     if (m.type === 'exportTests') {
       const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!folder) { this.post('apiResult', { text: 'Open a workspace folder first.' }); return; }
-      fs.writeFileSync(path.join(folder, 'aitestnova-tests.json'), JSON.stringify(this.state.recorded, null, 2));
-      fs.writeFileSync(path.join(folder, 'aitestnova-tests.yml'), recordedTestsToYaml(this.state.recorded));
+      try {
+        fs.writeFileSync(path.join(folder, 'aitestnova-tests.json'), JSON.stringify(this.state.recorded, null, 2));
+        fs.writeFileSync(path.join(folder, 'aitestnova-tests.yml'), recordedTestsToYaml(this.state.recorded));
+      } catch (e) { this.post('apiResult', { text: `Could not export tests: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}` }); return; }
       this.post('apiResult', { text: `Exported ${this.state.recorded.length} recorded test(s) to aitestnova-tests.json and aitestnova-tests.yml in the workspace. Edit them, then use Command Palette → AITestNova: Import API Tests to load the JSON back.` });
       return;
     }
     if (m.type === 'generateFromSelection') { await generateFromSelection(); return; }
     if (m.type === 'dashboard') {
       const hist = (this.state.replayHistory ?? []).slice(-5).map((h) => `${h.at.slice(0, 16)}: ${h.pass}/${h.total}`).join('<br>') || 'no replays yet';
-      const cov = (this.state.coverageHistory ?? []).slice(-5).map((h) => `${h.at.slice(0, 16)}: ${h.value}% (${h.rel})`).join('<br>') || 'no coverage reads yet';
+      const cov = (this.state.coverageHistory ?? []).slice(-5).map((h) => `${h.at.slice(0, 16)}: ${h.value}% (${escapeHtml(h.rel)})`).join('<br>') || 'no coverage reads yet';
       const stab = (this.state.stabilityHistory ?? []).slice(-5).map((h) => `${h.at.slice(0, 16)}: ${h.pass}/${h.total}`).join('<br>') || 'no unit stability runs yet';
       const trends = trendLines(this.state.replayHistory ?? []).slice(-10).join('<br>') || 'no replays yet — run Replay all to start a trend';
-      const flaky = Object.entries(this.state.flakyStats ?? {}).filter(([, s]) => s.fails > 0).map(([id, s]) => `${(this.state.recorded.find((r) => r.id === id)?.name ?? id)}: ${s.fails}/${s.runs} failed`).join('<br>') || 'no flaky tests recorded yet';
-      const quarantined = (this.state.quarantinedIds ?? []).map((id) => this.state.recorded.find((r) => r.id === id)?.name ?? id).join('<br>') || 'none';
+      const flaky = Object.entries(this.state.flakyStats ?? {}).filter(([, s]) => s.fails > 0).map(([id, s]) => `${escapeHtml(this.state.recorded.find((r) => r.id === id)?.name ?? id)}: ${s.fails}/${s.runs} failed`).join('<br>') || 'no flaky tests recorded yet';
+      const quarantined = (this.state.quarantinedIds ?? []).map((id) => escapeHtml(this.state.recorded.find((r) => r.id === id)?.name ?? id)).join('<br>') || 'none';
       const totalReplays = (this.state.replayHistory ?? []).reduce((a, h) => a + h.total, 0);
       const totalPass = (this.state.replayHistory ?? []).reduce((a, h) => a + h.pass, 0);
       this.post('dashboard', { html: `<p>Recorded API tests: <b>${this.state.recorded.length}</b> · Suites: <b>${(this.state.suites ?? []).length}</b><br>All replays: <b>${totalPass}/${totalReplays} passed</b><br>Last replay: <b>${this.state.lastReplay ? `${this.state.lastReplay.pass}/${this.state.lastReplay.total}` : 'none'}</b> · Last coverage: <b>${this.state.lastCoverage !== undefined ? `${this.state.lastCoverage}%` : 'none'}</b></p><p><b>Recent replays</b><br>${hist}</p><p><b>Trend (pass rate per run)</b><br>${trends}</p><p><b>Flaky tests</b><br>${flaky}</p><p><b>Quarantined</b><br>${quarantined}</p><p><b>Recent coverage</b><br>${cov}</p><p><b>Recent unit stability</b><br>${stab}</p><p><small>Local dashboard only — no cloud, no telemetry. Use the Health tab to check stale tests, run a mutation score, or quarantine flaky tests.</small></p>` });
@@ -344,21 +375,22 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
 let providerRef: AITestNovaProvider | undefined;
 let extContext: vscode.ExtensionContext | undefined;
 
-async function detectTestCommand(folder: string): Promise<string> {
+async function detectTestCommand(folder: string): Promise<string | null> {
   const cfg = vscode.workspace.getConfiguration('aitestnova').get<string>('testCommand');
   if (cfg) { return cfg; }
   if (fs.existsSync(path.join(folder, 'package.json'))) { return 'npm test'; }
   if (fs.existsSync(path.join(folder, 'go.mod'))) { return 'go test ./...'; }
   if (fs.existsSync(path.join(folder, 'pom.xml'))) { return 'mvn -B test'; }
   if (fs.existsSync(path.join(folder, 'requirements.txt')) || fs.existsSync(path.join(folder, 'pyproject.toml'))) { return 'pytest'; }
-  return 'npm test';
+  return null;
 }
 
 async function runUnitStability(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!folder) { vscode.window.showWarningMessage('AITestNova: open a workspace folder first.'); return; }
   const cmd = await detectTestCommand(folder);
-  const runs = vscode.workspace.getConfiguration('aitestnova').get<number>('stabilityRuns') || 5;
+  if (!cmd) { vscode.window.showWarningMessage('AITestNova: no test command detected for this folder and none is set. Set one in Settings → AITestNova: Test Command, then re-run.'); return; }
+  const runs = Math.max(1, vscode.workspace.getConfiguration('aitestnova').get<number>('stabilityRuns') || 5);
   const out = vscode.window.createOutputChannel('AITestNova Unit Stability');
   out.show(); out.appendLine(`Running: ${cmd} (${runs} times)`);
   let passed = 0;
@@ -371,10 +403,26 @@ async function runUnitStability(): Promise<void> {
   vscode.window.showInformationMessage(`AITestNova unit stability: ${passed}/${runs} passed — ${stable ? 'STABLE' : 'FLAKY'}. See the AITestNova output channel for details.`);
 }
 
+let lastGenerated: { content: string; fileName: string } | undefined;
 async function openGenerated(content: string, fileName: string): Promise<void> {
+  lastGenerated = { content, fileName };
   const doc = await vscode.workspace.openTextDocument({ language: fileName.endsWith('.py') ? 'python' : fileName.endsWith('.go') ? 'go' : fileName.endsWith('.java') ? 'java' : 'typescript', content });
   await vscode.window.showTextDocument(doc);
   providerRef?.post('preview', { text: content });
+}
+
+async function saveGeneratedToTestFile(): Promise<void> {
+  if (!lastGenerated) { vscode.window.showWarningMessage('AITestNova: nothing generated yet in this session. Generate a test first, then save it.'); return; }
+  const target = lastGenerated.fileName;
+  if (fs.existsSync(target)) {
+    const choice = await vscode.window.showWarningMessage(`AITestNova: ${path.basename(target)} already exists. Replace it with the newly generated test?`, 'Replace', 'Cancel');
+    if (choice !== 'Replace') { return; }
+  }
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, lastGenerated.content);
+    vscode.window.showInformationMessage(`AITestNova: test saved to ${target}. The stale check will find it there.`);
+  } catch (e) { vscode.window.showErrorMessage(`AITestNova: could not save the test file — ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`); }
 }
 
 async function recordSnapshots(doc: vscode.TextDocument, fns: { name: string; params: string[] }[]): Promise<void> {
@@ -400,11 +448,12 @@ async function generateForFunctionAtCursor(): Promise<void> {
   const fn = [...fns].sort((a, b) => Math.abs(a.line - line) - Math.abs(b.line - line))[0];
   const state = await currentState();
   const ai = extContext ? await tryAIMulti(extContext, doc.getText().split('\n').slice(fn.line, fn.line + 40).join('\n'), doc.fileName) : null;
+  if (ai && 'failed' in ai) { vscode.window.showWarningMessage(`AITestNova: AI generation failed — ${ai.errors[0]}${ai.errors.length > 1 ? ` (+${ai.errors.length - 1} more)` : ''} Used the template instead.`); }
   const javaFramework = vscode.workspace.getConfiguration('aitestnova').get<string>('javaFramework') || 'junit';
-  const content = ai ? ai.content : generateTestFor(fn, doc.fileName, state.extraPrompt, javaFramework);
+  const content = ai && 'content' in ai ? ai.content : generateTestFor(fn, doc.fileName, state.extraPrompt, javaFramework);
   await openGenerated(content, testFileName(doc.fileName, lang));
   await recordSnapshots(doc, [fn]);
-  vscode.window.showInformationMessage(ai ? `AITestNova: test for ${fn.name} ready — best of ${ai.tried.length} model(s): ${ai.model}. Review it, then save it.` : `AITestNova: test for ${fn.name} ready — review it, then save it where you want it.`);
+  vscode.window.showInformationMessage(ai && 'content' in ai ? `AITestNova: test for ${fn.name} ready — best of ${ai.tried.length} model(s): ${ai.model}. Review it, then save it.` : `AITestNova: test for ${fn.name} ready — review it, then save it where you want it.`);
 }
 
 async function generateForFile(extra = ''): Promise<void> {
@@ -432,12 +481,15 @@ async function importTests(): Promise<void> {
   try {
     const parsed = JSON.parse(fs.readFileSync(picked[0].fsPath, 'utf8')) as RecordedTest[];
     if (!Array.isArray(parsed)) { throw new Error('Not a list of tests'); }
+    const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+    const valid = parsed.filter((r) => r && methods.has(r.method) && typeof r.url === 'string' && r.url && typeof r.expectedStatus === 'number');
+    const skipped = parsed.length - valid.length;
     const state = await currentState();
-    const { deduped } = dedupRecorded([...state.recorded, ...parsed.filter((r) => r && r.method && r.url)]);
+    const { deduped } = dedupRecorded([...state.recorded, ...valid]);
     state.recorded = deduped;
     if (extContext) { await extContext.globalState.update('aitestnova.state', state); }
     providerRef?.postRecorded();
-    vscode.window.showInformationMessage(`AITestNova: imported tests — ${state.recorded.length} recorded test(s) now.`);
+    vscode.window.showInformationMessage(`AITestNova: imported tests — ${state.recorded.length} recorded test(s) now.${skipped ? ` ${skipped} invalid entr${skipped === 1 ? 'y' : 'ies'} skipped (bad method, missing URL, or non-numeric status).` : ''}`);
   } catch (e) { vscode.window.showErrorMessage(`AITestNova: could not import that file — ${e instanceof Error ? e.message : String(e)}`); }
 }
 
@@ -497,6 +549,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aitestnova.open', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
     vscode.commands.registerCommand('aitestnova.generateFunction', generateForFunctionAtCursor),
     vscode.commands.registerCommand('aitestnova.generateFile', () => generateForFile()),
+    vscode.commands.registerCommand('aitestnova.saveGeneratedTest', saveGeneratedToTestFile),
     vscode.commands.registerCommand('aitestnova.recordApi', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); vscode.window.showInformationMessage('AITestNova: use the Record & Replay tab — enter a URL and click Send & Record.'); }),
     vscode.commands.registerCommand('aitestnova.replayAll', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
     vscode.commands.registerCommand('aitestnova.runStableCheck', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),

@@ -26,6 +26,11 @@ export function newId(prefix: string): string {
 }
 
 export async function sendRequest(method: HttpMethod, url: string, headers: { key: string; value: string }[], body: string): Promise<{ status: number; bodyText: string; timeMs: number }> {
+  // Fail fast with a readable message instead of letting fetch throw a
+  // generic error for a mistyped URL or a non-HTTP scheme.
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error(`Invalid URL: ${url}`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { throw new Error(`Only http:// and https:// URLs can be sent, not ${parsed.protocol}`); }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
   const started = Date.now();
@@ -48,13 +53,16 @@ export function compareBodies(expected: string, actual: string, normalizeVolatil
     return v;
   };
   try { return JSON.stringify(canon(JSON.parse(expected))) === JSON.stringify(canon(JSON.parse(actual))); }
-  catch { return expected === actual; }
+  catch { return expected.trim() === actual.trim(); }
 }
 
 export function dedupRecorded(tests: RecordedTest[]): { deduped: RecordedTest[]; removed: number } {
   const seen = new Set<string>(); const deduped: RecordedTest[] = [];
   for (const test of tests) {
-    const key = `${test.method} ${test.url} ${test.body}`;
+    // Headers are part of the identity: two tests that differ only by
+    // an Authorization header are different tests, not duplicates.
+    const headers = (test.headers ?? []).map((h) => `${h.key}:${h.value}`).sort().join('|');
+    const key = `${test.method} ${test.url} ${test.body} ${headers}`;
     if (!seen.has(key)) { seen.add(key); deduped.push(test); }
   }
   return { deduped, removed: tests.length - deduped.length };
@@ -90,8 +98,11 @@ export async function replayTest(test: RecordedTest, mockMode: boolean, normaliz
 // Stability check: replay N times, keep only tests that pass every time.
 // This mirrors Keploy's flake filtering, at API-replay level.
 export async function stabilityCheck(test: RecordedTest, runs: number, mockMode: boolean, normalizeVolatile = false): Promise<{ stable: boolean; results: ReplayResult[] }> {
+  // A run count of 0 (or a negative/garbage setting) used to report
+  // "stable" with zero results — a vacuous pass. Clamp to at least 1.
+  const safeRuns = Number.isFinite(runs) ? Math.max(1, Math.floor(runs)) : 1;
   const results: ReplayResult[] = [];
-  for (let i = 0; i < runs; i++) { results.push(await replayTest(test, mockMode, normalizeVolatile)); }
+  for (let i = 0; i < safeRuns; i++) { results.push(await replayTest(test, mockMode, normalizeVolatile)); }
   return { stable: results.every((r) => r.pass), results };
 }
 

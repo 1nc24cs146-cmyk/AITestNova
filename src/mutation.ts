@@ -10,6 +10,8 @@
 // If the baseline (unmutated) tests do not pass, no score is reported
 // at all — a mutation score on a failing baseline would be invented.
 
+import { maskStringsAndComments } from './textutil';
+
 export interface Mutant {
   id: number; kind: string; description: string; line: number;
   originalLine: string; mutatedLine: string;
@@ -36,16 +38,38 @@ const REPLACEMENTS: { from: string; to: string; kind: string }[] = [
 ];
 
 export function generateMutants(sourceText: string, maxMutants = 8): Mutant[] {
+  if (!Number.isFinite(maxMutants) || maxMutants <= 0) { return []; }
   const mutants: Mutant[] = [];
+  // Mask the whole file first, not line by line, so an operator inside
+  // a multi-line string or block comment is never mutated, and an
+  // operator on a comment's continuation line is not mistaken for code.
+  // The masked text keeps the original length, so an index found in it
+  // applies to the original line too. Language is guessed from the
+  // content (Python's "and"/"or"/True/False vs JS's &&/||/true/false);
+  // both operator sets are checked, but only in code positions.
+  const language = /\bdef\s+[A-Za-z_][\w]*\s*\(/.test(sourceText) && !/\bfunction\b/.test(sourceText) ? 'python' : 'javascript';
+  const masked = maskStringsAndComments(sourceText, language);
+  const maskedLines = masked.split(/\r?\n/);
   const lines = sourceText.split(/\r?\n/);
+  const isWordChar = (ch: string | undefined): boolean => !!ch && /[A-Za-z0-9_$]/.test(ch);
   for (let i = 0; i < lines.length && mutants.length < maxMutants; i++) {
     const line = lines[i];
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) { continue; }
+    const maskedLine = maskedLines[i] ?? '';
+    if (!maskedLine.trim()) { continue; }
     for (const rep of REPLACEMENTS) {
-      const idx = line.indexOf(rep.from);
-      if (idx >= 0) {
-        const mutated = line.slice(0, idx) + rep.to + line.slice(idx + rep.from.length);
+      let idx = maskedLine.indexOf(rep.from);
+      let found = -1;
+      while (idx >= 0) {
+        // Bare true/false/True/False must be whole words: "trueValue"
+        // is a variable, not a constant to flip.
+        if (!/^(true|false|True|False)$/.test(rep.from.trim()) || (!isWordChar(maskedLine[idx - 1]) && !isWordChar(maskedLine[idx + rep.from.length]))) {
+          found = idx;
+          break;
+        }
+        idx = maskedLine.indexOf(rep.from, idx + 1);
+      }
+      if (found >= 0) {
+        const mutated = line.slice(0, found) + rep.to + line.slice(found + rep.from.length);
         mutants.push({
           id: mutants.length + 1, kind: rep.kind,
           description: `${rep.kind}: "${rep.from.trim()}" → "${rep.to.trim()}" on line ${i + 1}`,
@@ -60,6 +84,7 @@ export function generateMutants(sourceText: string, maxMutants = 8): Mutant[] {
 
 export function applyMutant(sourceText: string, mutant: Mutant): string {
   const lines = sourceText.split(/\r?\n/);
+  if (mutant.line < 1 || mutant.line > lines.length) { return sourceText; }
   lines[mutant.line - 1] = mutant.mutatedLine;
   return lines.join('\n');
 }

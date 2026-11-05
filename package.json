@@ -24,7 +24,8 @@
     "onCommand:aitestnova.checkStaleTests",
     "onCommand:aitestnova.runMutationScore",
     "onCommand:aitestnova.quarantineFlakyTests",
-    "onCommand:aitestnova.showTrends"
+    "onCommand:aitestnova.showTrends",
+    "onCommand:aitestnova.saveGeneratedTest"
   ],
   "author": "NitinKumar Hiremath",
   "categories": [
@@ -112,6 +113,10 @@
       {
         "command": "aitestnova.showTrends",
         "title": "AITestNova: Show Trends"
+      },
+      {
+        "command": "aitestnova.saveGeneratedTest",
+        "title": "AITestNova: Save Generated Test to Its Test File"
       }
     ],
     "configuration": {
@@ -232,5 +237,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.3.4"
+  "version": "0.3.6"
 }
