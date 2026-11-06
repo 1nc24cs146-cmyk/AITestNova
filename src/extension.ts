@@ -4,7 +4,7 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { coverageDelta, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
+import { coverageDelta, detectTestFramework, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
 import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRequest, stabilityCheck, RecordedTest, ReplayResult } from './record';
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
@@ -438,10 +438,29 @@ async function recordSnapshots(doc: vscode.TextDocument, fns: { name: string; pa
   await extContext.globalState.update('aitestnova.state', state);
 }
 
+function resolveTestFramework(): 'jest' | 'vitest' | 'mocha' | 'node' | 'jasmine' {
+  const configured = vscode.workspace.getConfiguration('aitestnova').get<string>('testFramework') || 'auto';
+  if (configured !== 'auto') { return configured as 'jest' | 'vitest' | 'mocha' | 'node' | 'jasmine'; }
+  // Auto: read the project's package.json and config files, if any.
+  try {
+    const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+    if (!folder) { return 'jest'; }
+    const root = folder.uri.fsPath;
+    let pkg = '';
+    try { pkg = fs.readFileSync(path.join(root, 'package.json'), 'utf8'); } catch { pkg = ''; }
+    const configs: string[] = [];
+    for (const name of ['vitest.config.ts', 'vitest.config.js', 'jest.config.js', 'jest.config.ts', '.mocharc.json', '.mocharc.yml', 'jasmine.json']) {
+      try { if (fs.existsSync(path.join(root, name))) { configs.push(name); } } catch { /* ignore */ }
+    }
+    return detectTestFramework(pkg, configs);
+  } catch { return 'jest'; }
+}
+
 async function generateForFunctionAtCursor(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
   const doc = editor.document; const lang = languageFromFile(doc.fileName);
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift.'); return; }
   const fns = parseFunctions(doc.getText(), lang);
   if (!fns.length) { vscode.window.showWarningMessage('AITestNova: no functions found in this file.'); return; }
   const line = editor.selection.active.line;
@@ -450,7 +469,7 @@ async function generateForFunctionAtCursor(): Promise<void> {
   const ai = extContext ? await tryAIMulti(extContext, doc.getText().split('\n').slice(fn.line, fn.line + 40).join('\n'), doc.fileName) : null;
   if (ai && 'failed' in ai) { vscode.window.showWarningMessage(`AITestNova: AI generation failed — ${ai.errors[0]}${ai.errors.length > 1 ? ` (+${ai.errors.length - 1} more)` : ''} Used the template instead.`); }
   const javaFramework = vscode.workspace.getConfiguration('aitestnova').get<string>('javaFramework') || 'junit';
-  const content = ai && 'content' in ai ? ai.content : generateTestFor(fn, doc.fileName, state.extraPrompt, javaFramework);
+  const content = ai && 'content' in ai ? ai.content : generateTestFor(fn, doc.fileName, state.extraPrompt, javaFramework, resolveTestFramework(), doc.getText());
   await openGenerated(content, testFileName(doc.fileName, lang));
   await recordSnapshots(doc, [fn]);
   vscode.window.showInformationMessage(ai && 'content' in ai ? `AITestNova: test for ${fn.name} ready — best of ${ai.tried.length} model(s): ${ai.model}. Review it, then save it.` : `AITestNova: test for ${fn.name} ready — review it, then save it where you want it.`);
@@ -461,7 +480,7 @@ async function generateForFile(extra = ''): Promise<void> {
   if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
   const doc = editor.document; const lang = languageFromFile(doc.fileName);
   const javaFramework = vscode.workspace.getConfiguration('aitestnova').get<string>('javaFramework') || 'junit';
-  const content = generateTestsForFile(doc.getText(), doc.fileName, extra || (await currentState()).extraPrompt, javaFramework);
+  const content = generateTestsForFile(doc.getText(), doc.fileName, extra || (await currentState()).extraPrompt, javaFramework, resolveTestFramework());
   await openGenerated(content, testFileName(doc.fileName, lang));
   await recordSnapshots(doc, parseFunctions(doc.getText(), lang));
 }
@@ -545,7 +564,7 @@ export function activate(context: vscode.ExtensionContext): void {
   providerRef = new AITestNovaProvider(context, stateCache);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('aitestnova.main', providerRef),
-    vscode.languages.registerCodeLensProvider([{ language: 'javascript' }, { language: 'typescript' }, { language: 'python' }, { language: 'java' }, { language: 'go' }], new LensProvider()),
+    vscode.languages.registerCodeLensProvider([{ language: 'javascript' }, { language: 'typescript' }, { language: 'python' }, { language: 'java' }, { language: 'go' }, { language: 'c' }, { language: 'cpp' }, { language: 'csharp' }, { language: 'rust' }, { language: 'ruby' }, { language: 'php' }, { language: 'kotlin' }, { language: 'swift' }, { language: 'vue' }], new LensProvider()),
     vscode.commands.registerCommand('aitestnova.open', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
     vscode.commands.registerCommand('aitestnova.generateFunction', generateForFunctionAtCursor),
     vscode.commands.registerCommand('aitestnova.generateFile', () => generateForFile()),

@@ -35,7 +35,7 @@
 
 ## ⬇️ Install in Antigravity
 
-1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.3.6.vsix`
+1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.3.7.vsix`
 2. Reload Antigravity, then click the AITestNova icon in the activity bar.
 3. Open a code file and click “AITestNova: Generate test” above a function, or open the Record & Replay tab.
 
@@ -45,7 +45,7 @@ If you installed an earlier AITestNova build, uninstall it first when you change
 
 ### Unit tests
 
-- **Per function:** a “AITestNova: Generate test” button above each function in JavaScript/TypeScript, Python, Java, and Go.
+- **Per function:** a “AITestNova: Generate test” button above each function in JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, and Swift.
 - **Per file:** Command Palette → “AITestNova: Generate Tests for This File”.
 - **From a comment or spec:** select a comment/spec in a code file, then Command Palette → “AITestNova: Generate Tests from Selected Comment/Spec”. Case names come from your spec lines; the target is the first `code` name in the spec, or “target” for you to replace.
 - **Extra cases:** type an extra case in the panel (“also test empty input”) and it is added to the next generation.
@@ -170,6 +170,89 @@ This release makes every feature handle real-world code instead of only the happ
 - **Honest failures:** an unknown stack no longer gets a guessed `npm test` command — mutation and unit stability ask you to set `aitestnova.testCommand` instead; a broken coverage file is reported as broken, not as "no coverage file"; a failed export reports its error instead of failing silently; an imported test with a bad method, missing URL, or non-numeric status is skipped and counted.
 
 Still honestly not covered: the parser is pattern-based, not a full AST, so deeply unusual syntax (macros, exotic decorators, heavily nested generics) can still be missed — in that case generation says "no functions found" rather than inventing one. Mutation is operator-only; it does not delete statements or swap return values. Everything else from earlier versions (no eBPF capture, no cloud dashboard) still applies.
+
+## What's new in 0.3.7
+
+- **All languages (12):** C, C++, C#, Rust, Ruby, PHP, Kotlin, and Swift join JavaScript/TypeScript, Python, Java, and Go — each with real function parsing and a real test template (Google Test, xUnit, Rust `#[cfg(test)]`, Minitest, PHPUnit, JUnit 5, XCTest, and a C assert harness), plus spec-to-test generation in the same languages. A file type AITestNova does not know now says so honestly instead of being treated as JavaScript.
+
+## JavaScript libraries — trained in source (not yet a version)
+
+The generator now recognises what kind of JavaScript it is looking at and writes the right test for it:
+
+- **Test runners:** Jest, Vitest, Mocha, Node's own test runner, and Jasmine. `aitestnova.testFramework` is `auto` by default — it reads the project's `package.json` and config files and picks the runner; set it explicitly to force one.
+- **React:** a capitalised function that returns JSX gets a `@testing-library/react` render test; a `useXxx` hook gets a `renderHook` test.
+- **Express:** `app.get/post/...` routes get a supertest suite that hits the real HTTP layer instead of calling handlers directly.
+- **Vue:** functions inside a `.vue` file's `<script>` block are parsed and tested like JavaScript.
+- **Modules:** ESM `import` vs CommonJS `require` is detected from the file, and a default export is imported as a default import.
+
+Training is complete for all 13 languages on the list — JavaScript, TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift — all in source only, version still 0.3.7. No new version is packaged until the user says so.
+
+## Python libraries — trained in source (not yet a version)
+
+- **Flask:** `@app.route` and `@app.get`/`post` routes get a pytest suite using `app.test_client()`.
+- **FastAPI:** routes get a `TestClient` suite.
+- **Django:** `path()` entries in a urls file get a `TestCase` suite using Django's test client.
+- **Async:** an `async def` gets an awaited test marked `@pytest.mark.asyncio`.
+- **unittest:** a file that imports `unittest` gets a `TestCase` class instead of pytest functions.
+- **Pydantic / dataclasses:** a `BaseModel` or `@dataclass` gets a valid/invalid test (valid data passes, bad data raises `ValidationError`).
+
+## Java libraries — trained in source (not yet a version)
+
+- **Spring Boot:** a `@RestController` gets a MockMvc test for every route (base path from `@RequestMapping` included); a `@Service` gets a Mockito test with each constructor dependency mocked and each method smoke-tested.
+- **JUnit 5 / TestNG:** picked per project as before.
+
+## Go libraries — trained in source (not yet a version)
+
+- **Table-driven tests:** every function test is now a table with a normal case and an edge case (zero values), run through `t.Run` — the Go idiom, with field types taken from the real signature.
+- **Gin:** `r.GET`/`POST`/`...` calls get an `httptest` suite.
+- **testify:** a file that imports `testify/assert` or `testify/require` uses `require.NotNil` assertions.
+
+## C and C++ libraries — trained in source (not yet a version)
+
+- **C — Unity:** a file that includes `unity.h` gets a Unity test (`TEST_ASSERT_*`, `RUN_TEST`, `UNITY_BEGIN`/`UNITY_END`); otherwise the plain assert harness is used.
+- **C++ — Catch2 / doctest:** a file that includes Catch2 gets `TEST_CASE` with `CHECK`; doctest gets the same shape with doctest headers; otherwise Google Test is used.
+
+## C# libraries — trained in source (not yet a version)
+
+- **NUnit / MSTest / xUnit:** picked from the file's `using` lines (`[TestFixture]`/`[Test]`, `[TestClass]`/`[TestMethod]`, or xUnit `[Fact]`).
+- **ASP.NET Core:** a controller's `[HttpGet]`/`[HttpPost]`/`...` actions get a `WebApplicationFactory` test that calls each route over HTTP.
+
+## Rust libraries — trained in source (not yet a version)
+
+- **tokio:** an `async fn` gets a `#[tokio::test]` with an awaited call.
+- **serde:** a struct that derives `Serialize`/`Deserialize` gets a JSON round-trip test (`to_string` then `from_str`).
+
+## Ruby libraries — trained in source (not yet a version)
+
+- **RSpec:** a file that uses RSpec gets an `RSpec.describe` suite instead of Minitest.
+- **Rails:** a `*Controller` class gets a request spec (`type: :request`) hitting its conventional index route.
+
+## PHP libraries — trained in source (not yet a version)
+
+- **Pest:** a Pest project gets `test('...', function () {...})` suites with `expect(...)->not->toBeNull()`.
+- **Laravel:** `Route::get`/`post`/`...` entries get a feature test (`$this->get(...)` + `assertStatus(200)`).
+
+## Kotlin libraries — trained in source (not yet a version)
+
+- **Spring Boot (Kotlin):** a `@RestController` gets a MockMvc test in Kotlin syntax (`lateinit var mockMvc`).
+- **Ktor:** `routing { get("/...") { } }` entries get a `testApplication` test per route.
+
+## Swift libraries — trained in source (not yet a version)
+
+- **async:** an `async` function gets an `async throws` test with `try await`.
+- **Vapor:** `app.get`/`post`/`...` routes get an XCTVapor test (`app.test(.GET, "...")`).
+
+Not yet trained: Svelte, Fastify, and E2E runners (Cypress, Playwright).
+
+## TypeScript libraries — trained in source (not yet a version)
+
+- **Parser:** generic functions and arrows (`function identity<T>(...)`, `<T,>(x) => ...`), class methods with `private`/`public`/`protected`/`readonly`/`abstract`/`override`, constructor property promotion (`constructor(private db: Db)`), optional and union params. Overload signatures and abstract methods are skipped (the implementation is kept), and a decorator call like `@Injectable()` is never mistaken for a function.
+- **Async done right:** an `async` function gets an awaited test, and a function returning `Observable` gets a `firstValueFrom` test — a plain assertion on a Promise always passes, so the generator no longer writes one.
+- **Angular:** `@Component` classes get a TestBed test (create, detectChanges, plus each method); `@Injectable` services get a TestBed inject test.
+- **NestJS:** `@Controller` classes get an end-to-end test with `Test.createTestingModule` and supertest for every route; `@Injectable` services get a unit test with each constructor dependency mocked as `{ provide: Dep, useValue: {} }`.
+- **Zod:** a `z.object` schema gets parse tests (valid data accepted, `null` rejected).
+- **Next.js:** App Router `GET`/`POST` handlers get a test that calls the handler with a real `Request`.
+- **Runners:** `ts-jest` maps to Jest, `ts-node`/`tsx` map to the Node runner, and an Angular project with no other runner maps to Jasmine. A `.tsx` component test is written to `.test.tsx`.
 
 ## What's new in 0.3.6 — only the useful additions
 

@@ -25,7 +25,15 @@
     "onCommand:aitestnova.runMutationScore",
     "onCommand:aitestnova.quarantineFlakyTests",
     "onCommand:aitestnova.showTrends",
-    "onCommand:aitestnova.saveGeneratedTest"
+    "onCommand:aitestnova.saveGeneratedTest",
+    "onLanguage:c",
+    "onLanguage:cpp",
+    "onLanguage:csharp",
+    "onLanguage:rust",
+    "onLanguage:ruby",
+    "onLanguage:php",
+    "onLanguage:kotlin",
+    "onLanguage:swift"
   ],
   "author": "NitinKumar Hiremath",
   "categories": [
@@ -179,6 +187,19 @@
           "default": 8,
           "description": "Maximum mutants to run for a mutation score. Each mutant temporarily swaps one operator in the file, runs the test command, then restores the file.",
           "type": "number"
+        },
+        "aitestnova.testFramework": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "jest",
+            "vitest",
+            "mocha",
+            "node",
+            "jasmine"
+          ],
+          "default": "auto",
+          "description": "JavaScript test runner for generated tests. 'auto' reads the project's package.json and config files (Vitest, Jest, Mocha, Jasmine, Node test runner), defaulting to Jest."
         }
       },
       "title": "AITestNova"
@@ -237,5 +258,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.3.6"
+  "version": "0.3.7"
 }
