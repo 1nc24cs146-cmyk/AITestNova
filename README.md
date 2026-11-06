@@ -6,7 +6,7 @@
 **Generate unit tests, record and replay API calls with mocks, run test suites, check coverage, and see a local dashboard — in Antigravity. Multi-model test generation, stability checks, and CI workflow included.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-aitestnova.aitestnova-0d9488?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
-[![Version](https://img.shields.io/badge/Version-v0.3.6-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
+[![Version](https://img.shields.io/badge/Version-v0.3.9-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
 [![Downloads](https://img.shields.io/badge/Downloads-362-10b981?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=for-the-badge)](LICENSE)
 
@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.aitestnova` (this build) — live on Open VSX as `aitestnova.aitestnova` |
-| **Version** | 0.3.6 |
+| **Version** | 0.3.9 |
 | **Downloads** | 362 on Open VSX (4 Nov 2026) |
 | **Editor** | Antigravity |
 | **Models** | Template (no model), local Ollama, or OpenAI-compatible — your choice |
@@ -35,7 +35,7 @@
 
 ## ⬇️ Install in Antigravity
 
-1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.3.7.vsix`
+1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.3.9.vsix`
 2. Reload Antigravity, then click the AITestNova icon in the activity bar.
 3. Open a code file and click “AITestNova: Generate test” above a function, or open the Record & Replay tab.
 
@@ -171,11 +171,19 @@ This release makes every feature handle real-world code instead of only the happ
 
 Still honestly not covered: the parser is pattern-based, not a full AST, so deeply unusual syntax (macros, exotic decorators, heavily nested generics) can still be missed — in that case generation says "no functions found" rather than inventing one. Mutation is operator-only; it does not delete statements or swap return values. Everything else from earlier versions (no eBPF capture, no cloud dashboard) still applies.
 
+## What's new in 0.3.9
+
+- **Real-world problems:** the generator now detects what a file actually touches — network calls, databases, the file system, the clock, environment config — and writes tests that mock them instead of calling the real thing. A function that hits the network, a database, or writes a file gets no plain test at all (its plain test used to call the real thing); it gets the mocked suite instead. Error paths and pagination get their own tests too.
+
+## What's new in 0.3.8
+
+- **All 13 languages trained, one by one:** JavaScript (Jest, Vitest, Mocha, Node runner, Jasmine; React, Express, Vue, ESM/CommonJS), TypeScript (Angular TestBed, NestJS e2e + services, RxJS Observables, Zod, Next.js handlers), Python (Flask, FastAPI, Django, async tests, unittest, Pydantic), Java (Spring Boot MockMvc, Mockito services), Go (table-driven tests, Gin, testify), C (Unity), C++ (Catch2, doctest), C# (NUnit, MSTest, ASP.NET Core), Rust (tokio, serde round-trip), Ruby (RSpec, Rails request specs), PHP (Pest, Laravel), Kotlin (Spring Boot, Ktor), Swift (async tests, Vapor). The generator recognises the framework a file uses and writes the test that framework expects.
+
 ## What's new in 0.3.7
 
 - **All languages (12):** C, C++, C#, Rust, Ruby, PHP, Kotlin, and Swift join JavaScript/TypeScript, Python, Java, and Go — each with real function parsing and a real test template (Google Test, xUnit, Rust `#[cfg(test)]`, Minitest, PHPUnit, JUnit 5, XCTest, and a C assert harness), plus spec-to-test generation in the same languages. A file type AITestNova does not know now says so honestly instead of being treated as JavaScript.
 
-## JavaScript libraries — trained in source (not yet a version)
+## JavaScript libraries — shipped in v0.3.8
 
 The generator now recognises what kind of JavaScript it is looking at and writes the right test for it:
 
@@ -185,9 +193,9 @@ The generator now recognises what kind of JavaScript it is looking at and writes
 - **Vue:** functions inside a `.vue` file's `<script>` block are parsed and tested like JavaScript.
 - **Modules:** ESM `import` vs CommonJS `require` is detected from the file, and a default export is imported as a default import.
 
-Training is complete for all 13 languages on the list — JavaScript, TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift — all in source only, version still 0.3.7. No new version is packaged until the user says so.
+Training is complete for all 13 languages on the list — JavaScript, TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift — all shipped in v0.3.8.
 
-## Python libraries — trained in source (not yet a version)
+## Python libraries — shipped in v0.3.8
 
 - **Flask:** `@app.route` and `@app.get`/`post` routes get a pytest suite using `app.test_client()`.
 - **FastAPI:** routes get a `TestClient` suite.
@@ -196,55 +204,65 @@ Training is complete for all 13 languages on the list — JavaScript, TypeScript
 - **unittest:** a file that imports `unittest` gets a `TestCase` class instead of pytest functions.
 - **Pydantic / dataclasses:** a `BaseModel` or `@dataclass` gets a valid/invalid test (valid data passes, bad data raises `ValidationError`).
 
-## Java libraries — trained in source (not yet a version)
+## Java libraries — shipped in v0.3.8
 
 - **Spring Boot:** a `@RestController` gets a MockMvc test for every route (base path from `@RequestMapping` included); a `@Service` gets a Mockito test with each constructor dependency mocked and each method smoke-tested.
 - **JUnit 5 / TestNG:** picked per project as before.
 
-## Go libraries — trained in source (not yet a version)
+## Go libraries — shipped in v0.3.8
 
 - **Table-driven tests:** every function test is now a table with a normal case and an edge case (zero values), run through `t.Run` — the Go idiom, with field types taken from the real signature.
 - **Gin:** `r.GET`/`POST`/`...` calls get an `httptest` suite.
 - **testify:** a file that imports `testify/assert` or `testify/require` uses `require.NotNil` assertions.
 
-## C and C++ libraries — trained in source (not yet a version)
+## C and C++ libraries — shipped in v0.3.8
 
 - **C — Unity:** a file that includes `unity.h` gets a Unity test (`TEST_ASSERT_*`, `RUN_TEST`, `UNITY_BEGIN`/`UNITY_END`); otherwise the plain assert harness is used.
 - **C++ — Catch2 / doctest:** a file that includes Catch2 gets `TEST_CASE` with `CHECK`; doctest gets the same shape with doctest headers; otherwise Google Test is used.
 
-## C# libraries — trained in source (not yet a version)
+## C# libraries — shipped in v0.3.8
 
 - **NUnit / MSTest / xUnit:** picked from the file's `using` lines (`[TestFixture]`/`[Test]`, `[TestClass]`/`[TestMethod]`, or xUnit `[Fact]`).
 - **ASP.NET Core:** a controller's `[HttpGet]`/`[HttpPost]`/`...` actions get a `WebApplicationFactory` test that calls each route over HTTP.
 
-## Rust libraries — trained in source (not yet a version)
+## Rust libraries — shipped in v0.3.8
 
 - **tokio:** an `async fn` gets a `#[tokio::test]` with an awaited call.
 - **serde:** a struct that derives `Serialize`/`Deserialize` gets a JSON round-trip test (`to_string` then `from_str`).
 
-## Ruby libraries — trained in source (not yet a version)
+## Ruby libraries — shipped in v0.3.8
 
 - **RSpec:** a file that uses RSpec gets an `RSpec.describe` suite instead of Minitest.
 - **Rails:** a `*Controller` class gets a request spec (`type: :request`) hitting its conventional index route.
 
-## PHP libraries — trained in source (not yet a version)
+## PHP libraries — shipped in v0.3.8
 
 - **Pest:** a Pest project gets `test('...', function () {...})` suites with `expect(...)->not->toBeNull()`.
 - **Laravel:** `Route::get`/`post`/`...` entries get a feature test (`$this->get(...)` + `assertStatus(200)`).
 
-## Kotlin libraries — trained in source (not yet a version)
+## Kotlin libraries — shipped in v0.3.8
 
 - **Spring Boot (Kotlin):** a `@RestController` gets a MockMvc test in Kotlin syntax (`lateinit var mockMvc`).
 - **Ktor:** `routing { get("/...") { } }` entries get a `testApplication` test per route.
 
-## Swift libraries — trained in source (not yet a version)
+## Swift libraries — shipped in v0.3.8
 
 - **async:** an `async` function gets an `async throws` test with `try await`.
 - **Vapor:** `app.get`/`post`/`...` routes get an XCTVapor test (`app.test(.GET, "...")`).
 
+## Real-world problems — shipped in v0.3.9
+
+Toy functions are pure; real code is not. The generator now detects what a file actually touches and writes tests for that:
+
+- **Outside world detected:** network calls (`fetch`, `axios`, `requests`, `net/http`, `HttpClient`), databases (Prisma, Mongoose, SQL, repositories), the file system, the clock (`Date.now`, `datetime.now`, `time.Now`), and environment config (`process.env`, `os.environ`).
+- **Mocked, not real:** JavaScript/TypeScript tests mock `fetch`/`axios`, freeze the clock, and set test env vars; Python tests use `unittest.mock.patch` (`requests.get`, `builtins.open`, `datetime`, `os.environ`); Java tests use Mockito `@Mock`; Go tests use an `httptest` server. Nothing in these tests hits the network, disk, or a database.
+- **Plain tests no longer hit the network:** a function that calls the network, a database, or writes a file gets no plain test at all — its plain test used to call the real thing. It gets the mocked suite instead; pure functions in the same file keep their plain tests.
+- **Error paths:** a function that throws, raises, panics, or returns an error gets a test that triggers the error and asserts it surfaces.
+- **Pagination:** functions with `page`/`limit`/`offset` params get a test that asks for a real page.
+
 Not yet trained: Svelte, Fastify, and E2E runners (Cypress, Playwright).
 
-## TypeScript libraries — trained in source (not yet a version)
+## TypeScript libraries — shipped in v0.3.8
 
 - **Parser:** generic functions and arrows (`function identity<T>(...)`, `<T,>(x) => ...`), class methods with `private`/`public`/`protected`/`readonly`/`abstract`/`override`, constructor property promotion (`constructor(private db: Db)`), optional and union params. Overload signatures and abstract methods are skipped (the implementation is kept), and a decorator call like `@Injectable()` is never mistaken for a function.
 - **Async done right:** an `async` function gets an awaited test, and a function returning `Observable` gets a `firstValueFrom` test — a plain assertion on a Promise always passes, so the generator no longer writes one.
