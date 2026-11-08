@@ -1618,7 +1618,58 @@ export function parseGoCoverprofile(text: string): { pct: number } | null {
   return { pct: Math.round((covered / total) * 1000) / 10 };
 }
 
-// Multi-model evaluation scoring: count real test signals, not length alone.
+// Istanbul / nyc coverage-final.json (what `jest --coverage` / `nyc` writes):
+// an object keyed by absolute file path; each entry has `path`,
+// `statementMap` (id -> { start: { line }, end: { line } }) and
+// `s` (id -> hit count). A statement with 0 hits never ran.
+// Per-file percentage + uncovered lines, matching the Go coverprofile
+// reader above: read what the runner wrote, never invent numbers.
+export interface IstanbulFileCoverage { file: string; pct: number; covered: number; total: number; uncoveredLines: number[]; }
+export interface IstanbulCoverage { files: IstanbulFileCoverage[]; overallPct: number; }
+export function parseIstanbulCoverage(jsonText: string): IstanbulCoverage | null {
+  let data: unknown;
+  try { data = JSON.parse(jsonText); } catch { return null; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) { return null; }
+  const files: IstanbulFileCoverage[] = [];
+  for (const entry of Object.values(data as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') { continue; }
+    const e = entry as { path?: unknown; statementMap?: unknown; s?: unknown };
+    if (typeof e.path !== 'string' || !e.statementMap || typeof e.statementMap !== 'object' || !e.s || typeof e.s !== 'object') { continue; }
+    const statementMap = e.statementMap as Record<string, { start?: { line?: number } }>;
+    const hits = e.s as Record<string, unknown>;
+    let total = 0; let covered = 0;
+    const uncovered = new Set<number>();
+    for (const [id, count] of Object.entries(hits)) {
+      const loc = statementMap[id];
+      if (!loc || typeof loc.start?.line !== 'number') { continue; }
+      total += 1;
+      if (typeof count === 'number' && count > 0) { covered += 1; }
+      else { uncovered.add(loc.start.line); }
+    }
+    if (!total) { continue; }
+    files.push({ file: e.path, pct: Math.round((covered / total) * 1000) / 10, covered, total, uncoveredLines: [...uncovered].sort((a, b) => a - b) });
+  }
+  if (!files.length) { return null; }
+  files.sort((a, b) => a.pct - b.pct || a.file.localeCompare(b.file));
+  const total = files.reduce((a, f) => a + f.total, 0);
+  const covered = files.reduce((a, f) => a + f.covered, 0);
+  return { files, overallPct: Math.round((covered / total) * 1000) / 10 };
+}
+
+// Collapse sorted line numbers into readable ranges: [3,4,5,9] -> "3-5, 9".
+export function formatUncoveredLines(lines: number[]): string {
+  if (!lines.length) { return 'none'; }
+  const ranges: string[] = [];
+  let start = lines[0]; let prev = lines[0];
+  for (const line of lines.slice(1)) {
+    if (line === prev + 1) { prev = line; continue; }
+    ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = line; prev = line;
+  }
+  ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+  return ranges.join(', ');
+}
+
 // A candidate with more tests, assertions and edge cases scores higher;
 // unbalanced braces are penalised. Deterministic, so it can be unit-tested.
 export function scoreGeneratedTest(text: string): number {

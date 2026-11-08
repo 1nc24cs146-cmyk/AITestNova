@@ -4,7 +4,7 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { coverageDelta, detectTestFramework, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
+import { coverageDelta, detectTestFramework, formatUncoveredLines, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseIstanbulCoverage, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
 import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRequest, stabilityCheck, RecordedTest, ReplayResult } from './record';
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
@@ -221,6 +221,29 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     }
     return null;
   }
+  // JS/TS per-file coverage (0.4.0): parse the Istanbul coverage-final.json
+  // the runner already wrote and show each file's % plus its uncovered
+  // lines, worst file first — the same read-only, never-invent-numbers
+  // rule as the Go coverprofile reader, and reported through the Health
+  // tab like the stale check, mutation score and trends.
+  private async showJsCoverage(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!folder) { this.healthText('JS/TS coverage per file: open a workspace folder first.'); return; }
+    const rel = 'coverage/coverage-final.json';
+    const p = path.join(folder, rel);
+    if (!fs.existsSync(p)) {
+      this.healthText(`JS/TS coverage per file: no ${rel} found.\nRun your JS/TS tests with coverage first, e.g. jest --coverage or npx nyc npm test — AITestNova reads the file your runner writes, it does not measure coverage itself.`);
+      return;
+    }
+    let parsed;
+    try { parsed = parseIstanbulCoverage(fs.readFileSync(p, 'utf8')); } catch (e) { parsed = null; this.healthText(`JS/TS coverage per file: ${rel} was found but could not be read (${e instanceof Error ? e.message.split('\n')[0] : String(e)}). Re-run your tests with coverage to regenerate it.`); return; }
+    if (!parsed) {
+      this.healthText(`JS/TS coverage per file: ${rel} was found but contained no usable per-file statement data. Re-run your tests with coverage (jest --coverage) to regenerate it — AITestNova will not invent a number from a broken file.`);
+      return;
+    }
+    const lines = parsed.files.map((f) => `${f.pct}%  ${path.relative(folder, f.file) || f.file}  (${f.covered}/${f.total} statements)${f.uncoveredLines.length ? `\n    uncovered lines: ${formatUncoveredLines(f.uncoveredLines)}` : '\n    fully covered'}`);
+    this.healthText(`JS/TS coverage per file (${rel}) — overall ${parsed.overallPct}%:\n\n${lines.join('\n')}\n\nWorst file first. Uncovered lines are the statement starts Istanbul recorded with 0 hits.`);
+  }
   private async save(): Promise<void> { await this.context.globalState.update('aitestnova.state', this.state); }
   private parseHeaders(text: string): { key: string; value: string }[] {
     return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const i = l.indexOf(':'); return i > 0 ? { key: l.slice(0, i).trim(), value: l.slice(i + 1).trim() } : { key: l, value: '' }; });
@@ -233,6 +256,8 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     if (m.type === 'ready') { this.postRecorded(); this.postSuites(); return; }
     if (m.type === 'downloads') { void this.postDownloads(); return; }
     if (m.type === 'stale') { await this.checkStale(); return; }
+    if (m.type === 'jsCoverage') { await this.showJsCoverage(); return; }
+    if (m.type === 'addCI') { await addCIWorkflow(); return; }
     if (m.type === 'mutation') { await this.runMutation(); return; }
     if (m.type === 'trends') { this.showTrends(); return; }
     if (m.type === 'quarantineFlaky') { await this.quarantineFlaky(); return; }
@@ -527,6 +552,18 @@ async function commitGeneratedTests(): Promise<void> {
   } catch (e) { vscode.window.showErrorMessage(`AITestNova: could not commit — ${e instanceof Error ? e.message.split('\n')[0] : String(e)} (is this a git repo, and is there anything to commit?)`); }
 }
 
+async function addCIWorkflow(): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) { vscode.window.showWarningMessage('AITestNova: open a workspace folder first.'); return; }
+  const target = path.join(folder, '.github', 'workflows', 'aitestnova.yml');
+  if (fs.existsSync(target)) { vscode.window.showWarningMessage('AITestNova: .github/workflows/aitestnova.yml already exists. Delete it first if you want to regenerate it.'); return; }
+  const files = fs.readdirSync(folder);
+  const testCommand = vscode.workspace.getConfiguration('aitestnova').get<string>('testCommand') || undefined;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, generateCIWorkflow(detectStack(files), testCommand));
+  vscode.window.showInformationMessage('AITestNova: CI workflow created at .github/workflows/aitestnova.yml — review it before committing.');
+}
+
 async function createPRDescription(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!folder) { vscode.window.showWarningMessage('AITestNova: open a workspace folder first.'); return; }
@@ -588,16 +625,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('aitestnova.clearAiApiKey', async () => { await context.secrets.delete('aitestnova.aiApiKey'); vscode.window.showInformationMessage('AITestNova: API key removed from the keychain.'); }),
     vscode.commands.registerCommand('aitestnova.setCoverageBaseline', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
-    vscode.commands.registerCommand('aitestnova.addCIWorkflow', async () => {
-      const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!folder) { vscode.window.showWarningMessage('AITestNova: open a workspace folder first.'); return; }
-      const target = path.join(folder, '.github', 'workflows', 'aitestnova.yml');
-      if (fs.existsSync(target)) { vscode.window.showWarningMessage('AITestNova: .github/workflows/aitestnova.yml already exists. Delete it first if you want to regenerate it.'); return; }
-      const files = fs.readdirSync(folder);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, generateCIWorkflow(detectStack(files)));
-      vscode.window.showInformationMessage('AITestNova: CI workflow created at .github/workflows/aitestnova.yml — review it before committing.');
-    }),
+    vscode.commands.registerCommand('aitestnova.addCIWorkflow', addCIWorkflow),
   );
 }
 export function deactivate(): void { /* nothing to clean up */ }

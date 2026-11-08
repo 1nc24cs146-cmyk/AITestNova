@@ -6,7 +6,7 @@
 **Generate unit tests, record and replay API calls with mocks, run test suites, check coverage, and see a local dashboard — in Antigravity. Multi-model test generation, stability checks, and CI workflow included.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-aitestnova.aitestnova-0d9488?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
-[![Version](https://img.shields.io/badge/Version-v0.3.9-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
+[![Version](https://img.shields.io/badge/Version-v0.4.0-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
 [![Downloads](https://img.shields.io/badge/Downloads-362-10b981?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=for-the-badge)](LICENSE)
 
@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.aitestnova` (this build) — live on Open VSX as `aitestnova.aitestnova` |
-| **Version** | 0.3.9 |
+| **Version** | 0.4.0 |
 | **Downloads** | 362 on Open VSX (4 Nov 2026) |
 | **Editor** | Antigravity |
 | **Models** | Template (no model), local Ollama, or OpenAI-compatible — your choice |
@@ -35,7 +35,7 @@
 
 ## ⬇️ Install in Antigravity
 
-1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.3.9.vsix`
+1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.0.vsix`
 2. Reload Antigravity, then click the AITestNova icon in the activity bar.
 3. Open a code file and click “AITestNova: Generate test” above a function, or open the Record & Replay tab.
 
@@ -74,12 +74,13 @@ If you installed an earlier AITestNova build, uninstall it first when you change
 
 - **Coverage:** AITestNova reads coverage files your test runner already made (Cobertura XML, Jest coverage JSON). It never invents a coverage number. Run your tests with coverage first, for example `jest --coverage` or `pytest --cov`.
 - **Baseline + delta:** in the Coverage tab, “Set as baseline”, then re-run with coverage and “Check coverage delta”. If coverage did not improve, it warns you. It does not delete tests automatically, because per-test coverage attribution needs your runner's data.
+- **JS/TS per file (0.4.0):** in the Health tab, “JS/TS coverage per file” reads `coverage/coverage-final.json` and lists each file's % with its uncovered lines, worst file first. Go projects keep the overall % from `coverage.out` in the Coverage tab.
 - **Dashboard (local only):** the Dashboard tab shows recorded tests, suites, total replay pass rate, and the last 5 replays, coverage reads, and unit stability runs. The last 20 of each are kept. No cloud, no telemetry.
 - **Unit stability:** Command Palette → “AITestNova: Run Unit Tests Stability Check” runs your test command 5 times (auto-detected: `npm test`, `pytest`, `go test ./...`, `mvn -B test`, or your `aitestnova.testCommand`) and reports STABLE / FLAKY in the output channel.
 
 ### CI and pull requests — local only
 
-- **CI workflow:** Command Palette → “AITestNova: Add CI Workflow” writes `.github/workflows/aitestnova.yml` for your detected stack (Node, Python, Go, or Java). Review it before committing. It refuses to overwrite an existing file.
+- **CI workflow:** Command Palette → “AITestNova: Add CI Workflow” (or the button in the Coverage tab) writes `.github/workflows/aitestnova.yml` for your detected stack (Node, Python, Go, or Java). Review it before committing. It refuses to overwrite an existing file. From 0.4.0 the workflow also uploads coverage as an artifact, can be run by hand, and uses your `aitestnova.testCommand` when set.
 - **Commit tests:** “AITestNova: Commit Generated Tests (Local Git)” stages and commits a saved test file in your repo. Push is NOT done automatically.
 - **PR description:** “AITestNova: Create PR Description” writes `aitestnova-pr.md` with replay and coverage summary to paste into a pull request.
 
@@ -170,6 +171,11 @@ This release makes every feature handle real-world code instead of only the happ
 - **Honest failures:** an unknown stack no longer gets a guessed `npm test` command — mutation and unit stability ask you to set `aitestnova.testCommand` instead; a broken coverage file is reported as broken, not as "no coverage file"; a failed export reports its error instead of failing silently; an imported test with a bad method, missing URL, or non-numeric status is skipped and counted.
 
 Still honestly not covered: the parser is pattern-based, not a full AST, so deeply unusual syntax (macros, exotic decorators, heavily nested generics) can still be missed — in that case generation says "no functions found" rather than inventing one. Mutation is operator-only; it does not delete statements or swap return values. Everything else from earlier versions (no eBPF capture, no cloud dashboard) still applies.
+
+## What's new in 0.4.0
+
+- **JS/TS coverage per file (Health tab):** “JS/TS coverage per file” reads `coverage/coverage-final.json` — the file `jest --coverage` / `nyc` already writes — and shows every file's coverage %, worst file first, with its uncovered lines (e.g. `12-15, 22`) and an overall %. A file with no uncovered lines says “fully covered”. If the file is missing or has no usable statement data, it says so instead of inventing a number — the same rule as the Go coverprofile reader.
+- **CI workflow generation, extended:** the workflow `AITestNova: Add CI Workflow` writes (also now from a button in the Coverage tab, not only the Command Palette) now uploads the coverage output as a GitHub Actions artifact on every run, can be started by hand (`workflow_dispatch`), and respects your `aitestnova.testCommand` setting when you set one — so CI runs the same command you run locally. The base generator (stack detection for Node, Python, Go, Java, and an honest placeholder for unknown stacks) shipped in 0.3.9; 0.4.0 extends it.
 
 ## What's new in 0.3.9
 
