@@ -4,25 +4,29 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { coverageDelta, detectTestFramework, formatUncoveredLines, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseIstanbulCoverage, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
+import { buildMutantKillPrompt, buildUncoveredLinesPrompt, coverageDelta, detectTestFramework, findFunctionAtLine, formatUncoveredLines, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseGoCoverUncovered, parseIstanbulCoverage, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
 import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRequest, stabilityCheck, RecordedTest, ReplayResult } from './record';
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
-import { applyMutant, generateMutants, mutationScore } from './mutation';
+import { applyMutant, generateMutants, Mutant, mutationScore } from './mutation';
 import { flakyTestIds, FlakyStat, quarantineSuiteName, recordFlakyStats, trendLines } from './flaky';
 import { escapeHtml } from './textutil';
 
-interface State { recorded: RecordedTest[]; extraPrompt: string; baselineCoverage?: number; lastCoverage?: number; lastReplay?: { pass: number; total: number; at: string }; normalizeVolatile?: boolean; suites?: ApiSuite[]; replayHistory?: { at: string; pass: number; total: number }[]; coverageHistory?: { at: string; value: number; rel: string }[]; stabilityHistory?: { at: string; pass: number; total: number }[]; testSnapshots?: TestSnapshot[]; flakyStats?: Record<string, FlakyStat>; quarantinedIds?: string[]; mutationHistory?: { at: string; file: string; score: number | null; killed: number; survived: number; unknown: number }[]; }
+interface State { recorded: RecordedTest[]; extraPrompt: string; baselineCoverage?: number; lastCoverage?: number; lastReplay?: { pass: number; total: number; at: string }; normalizeVolatile?: boolean; suites?: ApiSuite[]; replayHistory?: { at: string; pass: number; total: number }[]; coverageHistory?: { at: string; value: number; rel: string }[]; stabilityHistory?: { at: string; pass: number; total: number }[]; testSnapshots?: TestSnapshot[]; flakyStats?: Record<string, FlakyStat>; quarantinedIds?: string[]; mutationHistory?: { at: string; file: string; score: number | null; killed: number; survived: number; unknown: number }[]; survivedMutants?: { file: string; mutants: Mutant[]; at: string }[]; }
 function nonce(): string { return Array.from({ length: 32 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join(''); }
 
-async function tryAIMulti(context: vscode.ExtensionContext, fnCode: string, fileName: string): Promise<{ content: string; model: string; tried: string[] } | { failed: true; errors: string[] } | null> {
+async function tryAIMulti(context: vscode.ExtensionContext, fnCode: string, fileName: string, customPrompt?: string): Promise<{ content: string; model: string; tried: string[] } | { failed: true; errors: string[] } | null> {
   const cfg = vscode.workspace.getConfiguration('aitestnova');
   const provider = cfg.get<string>('aiProvider') || 'template';
   if (provider !== 'ollama' && provider !== 'openai') { return null; }
   const listed = (cfg.get<string>('aiModels') || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 3);
   const fallback = provider === 'ollama' ? (cfg.get<string>('ollamaModel') || 'qwen2.5-coder:7b') : (cfg.get<string>('openaiModel') || 'gpt-4o-mini');
   const models = listed.length ? listed : [fallback];
-  const prompt = `Write only unit tests for this code from ${fileName}. Include normal, empty and error cases. Do not explain.\n\n${fnCode}`;
+  // Targeted generation (0.4.1) passes its own prompt, built from the
+  // uncovered lines or the surviving mutant; the default prompt below
+  // is for whole-function generation. Either way the same models, the
+  // same configured settings, and the same best-wins scoring apply.
+  const prompt = customPrompt ?? `Write only unit tests for this code from ${fileName}. Include normal, empty and error cases. Do not explain.\n\n${fnCode}`;
   const candidates: { model: string; text: string }[] = [];
   const errors: string[] = [];
   if (provider === 'ollama') {
@@ -148,12 +152,13 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     }
     let killed = 0; let survived = 0; let unknown = 0;
     const lines: string[] = [];
+    const survivedList: Mutant[] = [];
     for (const mutant of mutants) {
       try { fs.writeFileSync(doc.uri.fsPath, applyMutant(original, mutant)); } catch (e) { lines.push(`Mutant ${mutant.id}: SKIPPED — could not write file: ${e instanceof Error ? e.message : String(e)}`); unknown += 1; continue; }
       let outcome: 'pass' | 'fail' | 'unknown';
       try { outcome = await runOnce(60000); } finally { try { fs.writeFileSync(doc.uri.fsPath, original); } catch { /* restored below */ } }
       if (outcome === 'fail') { killed += 1; lines.push(`Mutant ${mutant.id}: KILLED — ${mutant.description}`); }
-      else if (outcome === 'pass') { survived += 1; lines.push(`Mutant ${mutant.id}: SURVIVED — ${mutant.description} (tests still passed — this bug would slip through)`); }
+      else if (outcome === 'pass') { survived += 1; survivedList.push(mutant); lines.push(`Mutant ${mutant.id}: SURVIVED — ${mutant.description} (tests still passed — this bug would slip through)`); }
       else { unknown += 1; lines.push(`Mutant ${mutant.id}: UNKNOWN — run timed out, excluded from the score`); }
     }
     if (fs.readFileSync(doc.uri.fsPath, 'utf8') !== original) {
@@ -162,6 +167,13 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     }
     const { score } = mutationScore(killed, survived);
     this.state.mutationHistory = [...(this.state.mutationHistory ?? []), { at: new Date().toISOString(), file: doc.fileName, score, killed, survived, unknown }].slice(-20);
+    // Keep the survived mutants themselves (0.4.1): "Generate tests to
+    // kill surviving mutants" reads them back per file. A later run
+    // replaces the entry for this file; a run with no survivors clears it.
+    const prevSurvived = (this.state.survivedMutants ?? []).filter((s) => s.file !== doc.fileName);
+    this.state.survivedMutants = survivedList.length
+      ? [...prevSurvived, { file: doc.fileName, mutants: survivedList, at: new Date().toISOString() }].slice(-20)
+      : prevSurvived;
     await this.save();
     const text = `Mutation score for ${path.basename(doc.fileName)} (${cmd}):\n${score === null ? 'No score — no mutant produced a clear killed/survived result.' : `Score: ${score}% (${killed} killed, ${survived} survived${unknown ? `, ${unknown} unknown excluded` : ''})`}\n\n${lines.join('\n')}\n\nScope, honestly: this score covers only the ${mutants.length} mutant(s) actually run in this file, not the whole codebase. A survived mutant means your tests did not catch that small change — add an assertion for it. The file was restored to its original content after every mutant.`;
     this.healthText(text);
@@ -510,6 +522,100 @@ async function generateForFile(extra = ''): Promise<void> {
   await recordSnapshots(doc, parseFunctions(doc.getText(), lang));
 }
 
+// ---- Targeted test generation (0.4.1) ----
+// Both commands use the same write path as the existing generation:
+// openGenerated() previews the test and saveGeneratedToTestFile()
+// writes it to testFileName() (same file, same "review then save"
+// flow, same snapshots for the stale check). Both use the configured
+// provider/model settings through tryAIMulti (up to 3 models, the
+// best-scoring output wins) and fall back to the template generator
+// when the provider is 'template' or the AI fails. Empty states are
+// plain information messages, never error popups and never silent.
+async function generateForUncoveredLines(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
+  const doc = editor.document; const lang = languageFromFile(doc.fileName);
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift.'); return; }
+  const folder = vscode.workspace.getWorkspaceFolder(doc.uri)?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) { vscode.window.showInformationMessage('AITestNova: open a workspace folder first — coverage data is read from the workspace coverage folder.'); return; }
+  const sourceText = doc.getText();
+  let uncovered: number[] | null = null;
+  let source = '';
+  // Istanbul first (JS/TS), then the Go coverprofile.
+  const istanbulPath = path.join(folder, 'coverage', 'coverage-final.json');
+  if (fs.existsSync(istanbulPath)) {
+    try {
+      const parsed = parseIstanbulCoverage(fs.readFileSync(istanbulPath, 'utf8'));
+      const rel = path.relative(folder, doc.fileName);
+      const entry = parsed?.files.find((f) => f.file === doc.fileName || f.file.endsWith(rel) || doc.fileName.endsWith(f.file));
+      if (entry) { uncovered = entry.uncoveredLines; source = 'coverage/coverage-final.json'; }
+    } catch { /* fall through to Go */ }
+  }
+  if (uncovered === null) {
+    const goPath = path.join(folder, 'coverage', 'coverage.out');
+    if (fs.existsSync(goPath)) {
+      try {
+        const files = parseGoCoverUncovered(fs.readFileSync(goPath, 'utf8'));
+        const rel = path.relative(folder, doc.fileName);
+        const entry = files?.find((f) => f.file === doc.fileName || f.file.endsWith(rel) || doc.fileName.endsWith(f.file));
+        if (entry) { uncovered = entry.uncoveredLines; source = 'coverage/coverage.out'; }
+      } catch { /* fall through to the no-data message */ }
+    }
+  }
+  if (uncovered === null) {
+    vscode.window.showInformationMessage('AITestNova: no coverage data for this file. Run your tests with coverage first (e.g. jest --coverage, or go test -coverprofile=coverage/coverage.out), then run this command again.');
+    return;
+  }
+  if (!uncovered.length) {
+    vscode.window.showInformationMessage(`AITestNova: ${path.basename(doc.fileName)} is fully covered — no uncovered lines to target.`);
+    return;
+  }
+  const prompt = buildUncoveredLinesPrompt(doc.fileName, sourceText, uncovered);
+  if (!prompt) { vscode.window.showInformationMessage('AITestNova: no uncovered lines to target for this file.'); return; }
+  const state = await currentState();
+  const javaFramework = vscode.workspace.getConfiguration('aitestnova').get<string>('javaFramework') || 'junit';
+  const extra = `Cover exactly these uncovered lines from ${source}: ${formatUncoveredLines(uncovered)}.`;
+  const ai = extContext ? await tryAIMulti(extContext, sourceText, doc.fileName, prompt) : null;
+  if (ai && 'failed' in ai) { vscode.window.showWarningMessage(`AITestNova: AI generation failed — ${ai.errors[0]}${ai.errors.length > 1 ? ` (+${ai.errors.length - 1} more)` : ''} Used the template instead.`); }
+  const content = ai && 'content' in ai ? ai.content : generateTestsForFile(sourceText, doc.fileName, extra, javaFramework, resolveTestFramework());
+  await openGenerated(content, testFileName(doc.fileName, lang));
+  await recordSnapshots(doc, parseFunctions(sourceText, lang));
+  vscode.window.showInformationMessage(ai && 'content' in ai ? `AITestNova: tests for uncovered lines ${formatUncoveredLines(uncovered)} ready — best of ${ai.tried.length} model(s): ${ai.model}. Review them, then save.` : `AITestNova: tests for uncovered lines ${formatUncoveredLines(uncovered)} ready — review them, then save.`);
+}
+
+async function generateForSurvivingMutants(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
+  const doc = editor.document; const lang = languageFromFile(doc.fileName);
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift.'); return; }
+  const state = await currentState();
+  const entry = (state.survivedMutants ?? []).find((s) => s.file === doc.fileName);
+  if (!entry || !entry.mutants.length) {
+    vscode.window.showInformationMessage('AITestNova: no survived mutants recorded for this file yet. Run "AITestNova: Run Mutation Score" first — it records the mutants your tests did not catch, and this command generates tests to kill them.');
+    return;
+  }
+  const sourceText = doc.getText();
+  const javaFramework = vscode.workspace.getConfiguration('aitestnova').get<string>('javaFramework') || 'junit';
+  const parts: string[] = [];
+  let aiFailed = false;
+  for (const mutant of entry.mutants) {
+    const prompt = buildMutantKillPrompt(mutant, sourceText, doc.fileName);
+    const ai = extContext ? await tryAIMulti(extContext, sourceText, doc.fileName, prompt) : null;
+    if (ai && 'content' in ai) { parts.push(ai.content); continue; }
+    if (ai && 'failed' in ai) { aiFailed = true; }
+    // Template fallback: test the function holding the mutant, with
+    // the mutant named in the test so the user can fill in the exact
+    // assertion that fails on the mutant.
+    const extra = `This test must kill this surviving mutant: ${mutant.description}. Original line ${mutant.line}: ${mutant.originalLine.trim()} → mutated: ${mutant.mutatedLine.trim()}. Assert the exact behaviour the mutant changes.`;
+    const fn = findFunctionAtLine(sourceText, lang, mutant.line);
+    parts.push(fn ? generateTestFor(fn, doc.fileName, extra, javaFramework, resolveTestFramework(), sourceText) : generateTestsForFile(sourceText, doc.fileName, extra, javaFramework, resolveTestFramework()));
+  }
+  if (aiFailed) { vscode.window.showWarningMessage('AITestNova: AI generation failed for at least one mutant — used the template for those. The template tests name the mutant; fill in the expected value so the test fails on the mutant.'); }
+  await openGenerated(parts.join('\n'), testFileName(doc.fileName, lang));
+  await recordSnapshots(doc, parseFunctions(sourceText, lang));
+  vscode.window.showInformationMessage(`AITestNova: tests to kill ${entry.mutants.length} surviving mutant(s) ready — review them, then save.`);
+}
+
 async function generateFromSelection(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.selection.isEmpty) { vscode.window.showWarningMessage('AITestNova: select a comment or spec in a code file first.'); return; }
@@ -615,6 +721,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aitestnova.quarantineFlakyTests', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'quarantineFlaky' }); }),
     vscode.commands.registerCommand('aitestnova.showTrends', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'trends' }); }),
     vscode.commands.registerCommand('aitestnova.generateFromSelection', generateFromSelection),
+    vscode.commands.registerCommand('aitestnova.generateForUncoveredLines', generateForUncoveredLines),
+    vscode.commands.registerCommand('aitestnova.generateForSurvivingMutants', generateForSurvivingMutants),
     vscode.commands.registerCommand('aitestnova.importTests', importTests),
     vscode.commands.registerCommand('aitestnova.exportTests', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
     vscode.commands.registerCommand('aitestnova.commitTests', commitGeneratedTests),

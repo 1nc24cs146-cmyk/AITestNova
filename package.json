@@ -33,7 +33,9 @@
     "onLanguage:ruby",
     "onLanguage:php",
     "onLanguage:kotlin",
-    "onLanguage:swift"
+    "onLanguage:swift",
+    "onCommand:aitestnova.generateForUncoveredLines",
+    "onCommand:aitestnova.generateForSurvivingMutants"
   ],
   "author": "NitinKumar Hiremath",
   "categories": [
@@ -125,6 +127,14 @@
       {
         "command": "aitestnova.saveGeneratedTest",
         "title": "AITestNova: Save Generated Test to Its Test File"
+      },
+      {
+        "command": "aitestnova.generateForUncoveredLines",
+        "title": "AITestNova: Generate Tests for Uncovered Lines"
+      },
+      {
+        "command": "aitestnova.generateForSurvivingMutants",
+        "title": "AITestNova: Generate Tests to Kill Surviving Mutants"
       }
     ],
     "configuration": {
@@ -258,5 +268,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.4.0"
+  "version": "0.4.1"
 }
