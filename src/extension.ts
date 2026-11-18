@@ -4,7 +4,7 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { buildMutantKillPrompt, buildUncoveredLinesPrompt, coverageDelta, detectTestFramework, findFunctionAtLine, formatUncoveredLines, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseFunctions, parseGoCoverprofile, parseGoCoverUncovered, parseIstanbulCoverage, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
+import { buildMutantKillPrompt, buildUncoveredLinesPrompt, coverageDelta, detectTestFramework, findFunctionAtLine, formatUncoveredLines, generateCypressTests, generatePlaywrightTests, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseExpressRoutes, parseFastifyRoutes, parseFunctions, parseGoCoverprofile, parseGoCoverUncovered, parseIstanbulCoverage, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
 import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRequest, stabilityCheck, RecordedTest, ReplayResult } from './record';
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
@@ -497,7 +497,7 @@ async function generateForFunctionAtCursor(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
   const doc = editor.document; const lang = languageFromFile(doc.fileName);
-  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift.'); return; }
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift, Svelte.'); return; }
   const fns = parseFunctions(doc.getText(), lang);
   if (!fns.length) { vscode.window.showWarningMessage('AITestNova: no functions found in this file.'); return; }
   const line = editor.selection.active.line;
@@ -522,6 +522,29 @@ async function generateForFile(extra = ''): Promise<void> {
   await recordSnapshots(doc, parseFunctions(doc.getText(), lang));
 }
 
+// ---- E2E smoke tests (new things, in source) ----
+// One Playwright spec or one Cypress spec from the routes in the open
+// file (Express or Fastify). With no routes, the generators still
+// produce one test against the base URL with a TODO to fill in, so
+// the command never refuses — it just says what is missing.
+async function generateE2ETests(kind: 'playwright' | 'cypress'): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
+  const doc = editor.document; const lang = languageFromFile(doc.fileName);
+  if (lang !== 'javascript' && lang !== 'vue') { vscode.window.showWarningMessage('AITestNova: E2E tests come from the routes in a JavaScript/TypeScript file. Open an Express or Fastify server file first.'); return; }
+  const sourceText = doc.getText();
+  const routes = sourceText.includes('fastify') ? parseFastifyRoutes(sourceText) : parseExpressRoutes(sourceText);
+  const base = doc.fileName.replace(/\.[^.]+$/, '').split('/').pop();
+  const content = kind === 'playwright'
+    ? generatePlaywrightTests(routes, doc.fileName)
+    : generateCypressTests(routes, doc.fileName);
+  const fileName = kind === 'playwright' ? `${base}.spec.ts` : `${base}.cy.ts`;
+  await openGenerated(content, fileName);
+  vscode.window.showInformationMessage(routes.length > 0
+    ? `AITestNova: ${kind === 'playwright' ? 'Playwright' : 'Cypress'} smoke test for ${routes.length} route(s) ready — start your app first, then run it. Review it, then save it.`
+    : `AITestNova: no routes found in this file, so the ${kind === 'playwright' ? 'Playwright' : 'Cypress'} spec has one test against http://localhost:3000 — set the URL to your running app and add one test per route.`);
+}
+
 // ---- Targeted test generation (0.4.1) ----
 // Both commands use the same write path as the existing generation:
 // openGenerated() previews the test and saveGeneratedToTestFile()
@@ -535,7 +558,7 @@ async function generateForUncoveredLines(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
   const doc = editor.document; const lang = languageFromFile(doc.fileName);
-  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift.'); return; }
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift, Svelte.'); return; }
   const folder = vscode.workspace.getWorkspaceFolder(doc.uri)?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!folder) { vscode.window.showInformationMessage('AITestNova: open a workspace folder first — coverage data is read from the workspace coverage folder.'); return; }
   const sourceText = doc.getText();
@@ -587,7 +610,7 @@ async function generateForSurvivingMutants(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
   const doc = editor.document; const lang = languageFromFile(doc.fileName);
-  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift.'); return; }
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift, Svelte.'); return; }
   const state = await currentState();
   const entry = (state.survivedMutants ?? []).find((s) => s.file === doc.fileName);
   if (!entry || !entry.mutants.length) {
@@ -723,6 +746,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aitestnova.generateFromSelection', generateFromSelection),
     vscode.commands.registerCommand('aitestnova.generateForUncoveredLines', generateForUncoveredLines),
     vscode.commands.registerCommand('aitestnova.generateForSurvivingMutants', generateForSurvivingMutants),
+    vscode.commands.registerCommand('aitestnova.generatePlaywrightTests', () => generateE2ETests('playwright')),
+    vscode.commands.registerCommand('aitestnova.generateCypressTests', () => generateE2ETests('cypress')),
     vscode.commands.registerCommand('aitestnova.importTests', importTests),
     vscode.commands.registerCommand('aitestnova.exportTests', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
     vscode.commands.registerCommand('aitestnova.commitTests', commitGeneratedTests),

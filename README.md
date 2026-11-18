@@ -6,7 +6,7 @@
 **Generate unit tests, record and replay API calls with mocks, run test suites, check coverage, and see a local dashboard — in Antigravity. Multi-model test generation, stability checks, and CI workflow included.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-aitestnova.aitestnova-0d9488?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
-[![Version](https://img.shields.io/badge/Version-v0.4.1-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
+[![Version](https://img.shields.io/badge/Version-v0.4.2-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
 [![Downloads](https://img.shields.io/badge/Downloads-362-10b981?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=for-the-badge)](LICENSE)
 
@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.aitestnova` (this build) — live on Open VSX as `aitestnova.aitestnova` |
-| **Version** | 0.4.1 |
+| **Version** | 0.4.2 |
 | **Downloads** | 362 on Open VSX (4 Nov 2026) |
 | **Editor** | Antigravity |
 | **Models** | Template (no model), local Ollama, or OpenAI-compatible — your choice |
@@ -35,7 +35,7 @@
 
 ## ⬇️ Install in Antigravity
 
-1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.1.vsix`
+1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.2.vsix`
 2. Reload Antigravity, then click the AITestNova icon in the activity bar.
 3. Open a code file and click “AITestNova: Generate test” above a function, or open the Record & Replay tab.
 
@@ -173,6 +173,14 @@ This release makes every feature handle real-world code instead of only the happ
 
 Still honestly not covered: the parser is pattern-based, not a full AST, so deeply unusual syntax (macros, exotic decorators, heavily nested generics) can still be missed — in that case generation says "no functions found" rather than inventing one. Mutation is operator-only; it does not delete statements or swap return values. Everything else from earlier versions (no eBPF capture, no cloud dashboard) still applies.
 
+## What's new in 0.4.2
+
+- **Svelte, the 14th language:** `.svelte` files get a Vitest + @testing-library/svelte render test for the component, parsed from the file's `<script>` block.
+- **Fastify routes:** a file that uses Fastify gets inject tests (`app.inject`) instead of supertest ones.
+- **Playwright + Cypress E2E:** two new commands generate a smoke spec from the routes in the open file — one test per route, asserting it answers without a 5xx.
+- **Smarter sample values:** an email param gets `test@example.com`, a URL gets `https://example.com`, a typed `label: string` gets a string instead of `1`.
+- **Two bugs the new tests caught:** async arrow callbacks (`async (req, reply) =>`) are no longer parsed as a function called `async`, and CommonJS test files no longer mix `require()` with `import` statements (Node ran those as ESM and `require` was undefined).
+
 ## What's new in 0.4.1
 
 - **Targeted test generation:** two new Command Palette commands. “AITestNova: Generate Tests for Uncovered Lines” feeds the open file's uncovered lines (from `coverage/coverage-final.json` for JS/TS, `coverage/coverage.out` for Go) plus the code around them to the model and generates tests that execute exactly those lines. “AITestNova: Generate Tests to Kill Surviving Mutants” feeds each survived mutant from the last mutation run — its description, original line, and mutated line, plus the surrounding code — to the model and generates a test that passes on the original code and fails on the mutant. Both reuse the existing multi-model path (up to 3 configured models, best-scoring output wins) and the existing test-writing path (preview, then save to the test file), with the template generator as fallback when the provider is `template` or the AI fails. When there is no coverage data, the file is fully covered, or no survived mutants are recorded, the command says so in a plain message — no error popup, no silent no-op.
@@ -204,7 +212,7 @@ The generator now recognises what kind of JavaScript it is looking at and writes
 - **Vue:** functions inside a `.vue` file's `<script>` block are parsed and tested like JavaScript.
 - **Modules:** ESM `import` vs CommonJS `require` is detected from the file, and a default export is imported as a default import.
 
-Training is complete for all 13 languages on the list — JavaScript, TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift — all shipped in v0.3.8.
+Training is complete for all 13 languages on the list — JavaScript, TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift — all shipped in v0.3.8. Svelte joined after that, as the 14th language — see "New things" above.
 
 ## Python libraries — shipped in v0.3.8
 
@@ -260,6 +268,13 @@ Training is complete for all 13 languages on the list — JavaScript, TypeScript
 
 - **async:** an `async` function gets an `async throws` test with `try await`.
 - **Vapor:** `app.get`/`post`/`...` routes get an XCTVapor test (`app.test(.GET, "...")`).
+
+## New things — shipped in v0.4.2
+
+- **Svelte, the 14th language:** `.svelte` files get a Vitest + @testing-library/svelte render test for the component, parsed from the file's `<script>` block. The render test needs the standard Svelte Vitest setup in your project — `@sveltejs/vite-plugin-svelte`, a jsdom environment, and `resolve.conditions: ['browser']` in your Vitest config — otherwise Svelte loads its server build and the test fails.
+- **Fastify routes:** a file that uses Fastify gets inject tests (`app.inject`) instead of supertest ones — Fastify's own way to test routes without a server.
+- **Playwright + Cypress E2E:** two new commands generate a smoke spec from the routes in the open file — one test per route, asserting it answers without a 5xx. Playwright uses its request API, Cypress uses `cy.request`. With no routes, you still get one test against `http://localhost:3000` with a TODO to fill in.
+- **Smarter sample values:** an email param gets `test@example.com`, a URL gets `https://example.com`, a password gets `secret123`, a phone gets a number, a date gets `2026-01-01` — and a typed param keeps its type, so `label: string` gets a string instead of `1`.
 
 ## Real-world problems — shipped in v0.3.9
 

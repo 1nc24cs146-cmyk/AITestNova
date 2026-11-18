@@ -135,6 +135,14 @@
       {
         "command": "aitestnova.generateForSurvivingMutants",
         "title": "AITestNova: Generate Tests to Kill Surviving Mutants"
+      },
+      {
+        "command": "aitestnova.generatePlaywrightTests",
+        "title": "AITestNova: Generate Playwright E2E Tests"
+      },
+      {
+        "command": "aitestnova.generateCypressTests",
+        "title": "AITestNova: Generate Cypress E2E Tests"
       }
     ],
     "configuration": {
@@ -268,5 +276,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.4.1"
+  "version": "0.4.2"
 }
