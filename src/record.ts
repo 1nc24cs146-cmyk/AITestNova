@@ -17,6 +17,10 @@ export interface ReplayResult {
   id: string; name: string; pass: boolean; expectedStatus: number;
   actualStatus: number | null; statusMatch: boolean; bodyMatch: boolean;
   durationMs: number; error?: string; mocked?: boolean;
+  // Short plain description of the first body difference, when the status
+  // matched but the body did not — the flaky explainer reads this to tell
+  // a changing timestamp apart from response data that really changed.
+  bodyDiff?: string;
 }
 
 let counter = 0;
@@ -56,6 +60,44 @@ export function compareBodies(expected: string, actual: string, normalizeVolatil
   catch { return expected.trim() === actual.trim(); }
 }
 
+// The first difference between two bodies, in plain words — "timestamp was
+// "2026-…Z" but came back as "2026-…Z"", "items has 3 items, got 4".
+// Returns null when the bodies are equal. Only the first difference is
+// reported: the explainer needs the kind of change, not a full diff.
+export function firstBodyDiff(expected: string, actual: string): string | null {
+  const short = (v: unknown): string => {
+    const s = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
+    return s.length > 40 ? s.slice(0, 37) + '...' : s;
+  };
+  let expJson: unknown; let actJson: unknown;
+  try { expJson = JSON.parse(expected); actJson = JSON.parse(actual); } catch {
+    return expected.trim() === actual.trim() ? null : `text differs (expected ${expected.length} characters, got ${actual.length})`;
+  }
+  const walk = (e: unknown, a: unknown, at: string): string | null => {
+    if (JSON.stringify(e) === JSON.stringify(a)) { return null; }
+    if (Array.isArray(e) && Array.isArray(a)) {
+      if (e.length !== a.length) { return `${at || 'list'} has ${e.length} items, got ${a.length}`; }
+      for (let i = 0; i < e.length; i++) { const d = walk(e[i], a[i], `${at}[${i}]`); if (d) { return d; } }
+      return null;
+    }
+    if (e && typeof e === 'object' && a && typeof a === 'object') {
+      const keys = [...new Set([...Object.keys(e as object), ...Object.keys(a as object)])].sort();
+      for (const k of keys) {
+        const hasE = k in (e as Record<string, unknown>);
+        const hasA = k in (a as Record<string, unknown>);
+        const p = at ? `${at}.${k}` : k;
+        if (!hasE) { return `${p} was not expected but came back as ${short((a as Record<string, unknown>)[k])}`; }
+        if (!hasA) { return `${p} was ${short((e as Record<string, unknown>)[k])} but is missing now`; }
+        const d = walk((e as Record<string, unknown>)[k], (a as Record<string, unknown>)[k], p);
+        if (d) { return d; }
+      }
+      return null;
+    }
+    return `${at || 'value'} was ${short(e)} but came back as ${short(a)}`;
+  };
+  return walk(expJson, actJson, '');
+}
+
 export function dedupRecorded(tests: RecordedTest[]): { deduped: RecordedTest[]; removed: number } {
   const seen = new Set<string>(); const deduped: RecordedTest[] = [];
   for (const test of tests) {
@@ -85,6 +127,7 @@ export async function replayTest(test: RecordedTest, mockMode: boolean, normaliz
       id: test.id, name: test.name, pass: statusMatch && bodyMatch,
       expectedStatus: test.expectedStatus, actualStatus: res.status,
       statusMatch, bodyMatch, durationMs: res.timeMs,
+      bodyDiff: statusMatch && !bodyMatch ? firstBodyDiff(test.expectedBody, res.bodyText) ?? undefined : undefined,
     };
   } catch (err) {
     return {

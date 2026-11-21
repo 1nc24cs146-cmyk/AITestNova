@@ -143,6 +143,10 @@
       {
         "command": "aitestnova.generateCypressTests",
         "title": "AITestNova: Generate Cypress E2E Tests"
+      },
+      {
+        "command": "aitestnova.explainFlakyTest",
+        "title": "AITestNova: Explain Why a Test Is Flaky"
       }
     ],
     "configuration": {
@@ -276,5 +280,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.4.2"
+  "version": "0.4.3"
 }

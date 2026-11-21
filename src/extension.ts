@@ -9,7 +9,7 @@ import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRe
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
 import { applyMutant, generateMutants, Mutant, mutationScore } from './mutation';
-import { flakyTestIds, FlakyStat, quarantineSuiteName, recordFlakyStats, trendLines } from './flaky';
+import { flakyTestIds, FlakyStat, formatFlakyExplanation, quarantineSuiteName, recordFlakyStats, trendLines } from './flaky';
 import { escapeHtml } from './textutil';
 
 interface State { recorded: RecordedTest[]; extraPrompt: string; baselineCoverage?: number; lastCoverage?: number; lastReplay?: { pass: number; total: number; at: string }; normalizeVolatile?: boolean; suites?: ApiSuite[]; replayHistory?: { at: string; pass: number; total: number }[]; coverageHistory?: { at: string; value: number; rel: string }[]; stabilityHistory?: { at: string; pass: number; total: number }[]; testSnapshots?: TestSnapshot[]; flakyStats?: Record<string, FlakyStat>; quarantinedIds?: string[]; mutationHistory?: { at: string; file: string; score: number | null; killed: number; survived: number; unknown: number }[]; survivedMutants?: { file: string; mutants: Mutant[]; at: string }[]; }
@@ -196,6 +196,25 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     const names = ids.map((id) => this.state.recorded.find((r) => r.id === id)?.name ?? id).join('\n- ');
     this.healthText(`Quarantined ${ids.length} flaky test(s) into the "${qName}" suite. They are now excluded from Replay all — run that suite on its own when you want to check them.\n\n- ${names}\n\nUse "Restore quarantined" to put them back into normal runs.`);
   }
+  private async explainFlakyTest(): Promise<void> {
+    const stats = this.state.flakyStats ?? {};
+    const ids = flakyTestIds(stats);
+    if (!ids.length) {
+      this.healthText('Explain a flaky test: no flaky tests recorded yet.\nRun a Stability check (5×) or Replay all first — AITestNova only explains tests that have actually failed at least once, it does not guess which ones are flaky. A test that failed only once gets "not enough to tell yet" — run the stability check again to collect more runs.');
+      return;
+    }
+    let id = ids[0];
+    if (ids.length > 1) {
+      const picked = await vscode.window.showQuickPick(
+        ids.map((i) => ({ label: this.state.recorded.find((r) => r.id === i)?.name ?? i, description: `${stats[i].fails}/${stats[i].runs} failed`, id: i })),
+        { placeHolder: 'Which flaky test should I explain?' },
+      );
+      if (!picked) { return; }
+      id = picked.id;
+    }
+    const name = this.state.recorded.find((r) => r.id === id)?.name ?? id;
+    this.healthText(formatFlakyExplanation(name, stats[id]));
+  }
   private async restoreQuarantined(): Promise<void> {
     const count = (this.state.quarantinedIds ?? []).length;
     this.state.quarantinedIds = [];
@@ -273,6 +292,7 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     if (m.type === 'mutation') { await this.runMutation(); return; }
     if (m.type === 'trends') { this.showTrends(); return; }
     if (m.type === 'quarantineFlaky') { await this.quarantineFlaky(); return; }
+    if (m.type === 'explainFlaky') { await this.explainFlakyTest(); return; }
     if (m.type === 'restoreQuarantined') { await this.restoreQuarantined(); return; }
     if (m.type === 'saveGenerated') { await saveGeneratedToTestFile(); return; }
     if (m.type === 'updateExpected') {
@@ -742,6 +762,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aitestnova.checkStaleTests', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'stale' }); }),
     vscode.commands.registerCommand('aitestnova.runMutationScore', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'mutation' }); }),
     vscode.commands.registerCommand('aitestnova.quarantineFlakyTests', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'quarantineFlaky' }); }),
+    vscode.commands.registerCommand('aitestnova.explainFlakyTest', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'explainFlaky' }); }),
     vscode.commands.registerCommand('aitestnova.showTrends', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'trends' }); }),
     vscode.commands.registerCommand('aitestnova.generateFromSelection', generateFromSelection),
     vscode.commands.registerCommand('aitestnova.generateForUncoveredLines', generateForUncoveredLines),

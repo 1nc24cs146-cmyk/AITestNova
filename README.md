@@ -6,7 +6,7 @@
 **Generate unit tests, record and replay API calls with mocks, run test suites, check coverage, and see a local dashboard — in Antigravity. Multi-model test generation, stability checks, and CI workflow included.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-aitestnova.aitestnova-0d9488?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
-[![Version](https://img.shields.io/badge/Version-v0.4.2-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
+[![Version](https://img.shields.io/badge/Version-v0.4.3-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
 [![Downloads](https://img.shields.io/badge/Downloads-362-10b981?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=for-the-badge)](LICENSE)
 
@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.aitestnova` (this build) — live on Open VSX as `aitestnova.aitestnova` |
-| **Version** | 0.4.2 |
+| **Version** | 0.4.3 |
 | **Downloads** | 362 on Open VSX (4 Nov 2026) |
 | **Editor** | Antigravity |
 | **Models** | Template (no model), local Ollama, or OpenAI-compatible — your choice |
@@ -35,7 +35,7 @@
 
 ## ⬇️ Install in Antigravity
 
-1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.2.vsix`
+1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.3.vsix`
 2. Reload Antigravity, then click the AITestNova icon in the activity bar.
 3. Open a code file and click “AITestNova: Generate test” above a function, or open the Record & Replay tab.
 
@@ -172,6 +172,12 @@ This release makes every feature handle real-world code instead of only the happ
 - **Honest failures:** an unknown stack no longer gets a guessed `npm test` command — mutation and unit stability ask you to set `aitestnova.testCommand` instead; a broken coverage file is reported as broken, not as "no coverage file"; a failed export reports its error instead of failing silently; an imported test with a bad method, missing URL, or non-numeric status is skipped and counted.
 
 Still honestly not covered: the parser is pattern-based, not a full AST, so deeply unusual syntax (macros, exotic decorators, heavily nested generics) can still be missed — in that case generation says "no functions found" rather than inventing one. Mutation is operator-only; it does not delete statements or swap return values. Everything else from earlier versions (no eBPF capture, no cloud dashboard) still applies.
+
+## What's new in 0.4.3
+
+- **Explain why a test is flaky, in plain words:** the Health tab has a new "Explain a flaky test" button (and a Command Palette command). Pick a test that failed and it tells you the cause in one sentence — the server was not reachable, the request timed out, the server sometimes answered with an error, the response contains a value that changes every time, it only fails on the first run, or it only fails after other tests have run — with the evidence behind it and what to do about it.
+- **Failure detail is now recorded:** every replay keeps the last 5 failures per test — error text, how long it took, expected vs actual status, and what the body differed by — so the explanation reads the evidence instead of guessing. Failures recorded before 0.4.3 have no detail, so those honestly say there is not enough to tell yet.
+- **First body difference:** when a replay fails on the body, the result now names the first difference ("timestamp was … but came back as …", "items has 3 items, got 4") instead of just saying the body did not match.
 
 ## What's new in 0.4.2
 
