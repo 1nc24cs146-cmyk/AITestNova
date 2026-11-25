@@ -35,7 +35,11 @@
     "onLanguage:kotlin",
     "onLanguage:swift",
     "onCommand:aitestnova.generateForUncoveredLines",
-    "onCommand:aitestnova.generateForSurvivingMutants"
+    "onCommand:aitestnova.generateForSurvivingMutants",
+    "onCommand:aitestnova.fixFailingTest",
+    "onCommand:aitestnova.generateFromOpenApi",
+    "onCommand:aitestnova.generatePropertyTests",
+    "onCommand:aitestnova.showPerFileCoverage"
   ],
   "author": "NitinKumar Hiremath",
   "categories": [
@@ -147,6 +151,22 @@
       {
         "command": "aitestnova.explainFlakyTest",
         "title": "AITestNova: Explain Why a Test Is Flaky"
+      },
+      {
+        "command": "aitestnova.fixFailingTest",
+        "title": "AITestNova: Fix a Failing Test"
+      },
+      {
+        "command": "aitestnova.generateFromOpenApi",
+        "title": "AITestNova: Generate API Tests from OpenAPI Spec"
+      },
+      {
+        "command": "aitestnova.generatePropertyTests",
+        "title": "AITestNova: Generate Property-Based Tests"
+      },
+      {
+        "command": "aitestnova.showPerFileCoverage",
+        "title": "AITestNova: Show Coverage Per File"
       }
     ],
     "configuration": {
@@ -280,5 +300,5 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.4.3"
+  "version": "0.4.4"
 }

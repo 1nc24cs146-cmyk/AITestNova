@@ -6,7 +6,7 @@
 **Generate unit tests, record and replay API calls with mocks, run test suites, check coverage, and see a local dashboard — in Antigravity. Multi-model test generation, stability checks, and CI workflow included.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-aitestnova.aitestnova-0d9488?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
-[![Version](https://img.shields.io/badge/Version-v0.4.3-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
+[![Version](https://img.shields.io/badge/Version-v0.4.4-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/AITestNova)
 [![Downloads](https://img.shields.io/badge/Downloads-362-10b981?style=for-the-badge)](https://open-vsx.org/extension/aitestnova/aitestnova)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=for-the-badge)](LICENSE)
 
@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.aitestnova` (this build) — live on Open VSX as `aitestnova.aitestnova` |
-| **Version** | 0.4.3 |
+| **Version** | 0.4.4 |
 | **Downloads** | 362 on Open VSX (4 Nov 2026) |
 | **Editor** | Antigravity |
 | **Models** | Template (no model), local Ollama, or OpenAI-compatible — your choice |
@@ -35,7 +35,7 @@
 
 ## ⬇️ Install in Antigravity
 
-1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.3.vsix`
+1. Extensions → … → Install from VSIX → choose `aitestnova-antigravity-0.4.4.vsix`
 2. Reload Antigravity, then click the AITestNova icon in the activity bar.
 3. Open a code file and click “AITestNova: Generate test” above a function, or open the Record & Replay tab.
 
@@ -172,6 +172,13 @@ This release makes every feature handle real-world code instead of only the happ
 - **Honest failures:** an unknown stack no longer gets a guessed `npm test` command — mutation and unit stability ask you to set `aitestnova.testCommand` instead; a broken coverage file is reported as broken, not as "no coverage file"; a failed export reports its error instead of failing silently; an imported test with a bad method, missing URL, or non-numeric status is skipped and counted.
 
 Still honestly not covered: the parser is pattern-based, not a full AST, so deeply unusual syntax (macros, exotic decorators, heavily nested generics) can still be missed — in that case generation says "no functions found" rather than inventing one. Mutation is operator-only; it does not delete statements or swap return values. Everything else from earlier versions (no eBPF capture, no cloud dashboard) still applies.
+
+## What's new in 0.4.4
+
+- **Fix a failing test:** "AITestNova: Fix a Failing Test" runs your test command once, reads the first failure out of the output (Jest, Vitest, node:test, pytest), and offers a fix — the AI first, then the template. The template fix only handles the one case that is safe to fix from the test alone: a stale expectation (the test expected 3, the code returns 4 — the expectation is rewritten to 4, with a warning to check 4 is actually right first). A failure that looks like a bug in the source ("is not a function", "Cannot read property") is reported, not papered over, and a missing module is named. The fixed test opens for review, never written over the test file by itself.
+- **Generate API tests from an OpenAPI spec:** "AITestNova: Generate API Tests from OpenAPI Spec" reads an openapi.json / .yaml / .yml (OpenAPI 3, JSON or block-style YAML) and writes one test per operation with the global fetch — path and query parameters filled with schema-based samples, request bodies built from the schema, expected status from the spec's 2xx response, plus a missing-required-parameter test where the spec has required parameters. The base URL comes from the spec's servers list.
+- **Coverage per file for Python, Java and C#:** the Health tab's coverage view now reads `coverage/coverage.json` (coverage.py), `coverage/jacoco.xml` (JaCoCo) and `coverage/coverage.cobertura.xml` (coverlet) as well as the JS/TS and Go files it already read — per-file % with uncovered lines, worst first. "Generate tests for uncovered lines" targets those files too.
+- **Property-based tests:** "AITestNova: Generate Property-Based Tests" writes fast-check tests (JS/TS) or Hypothesis tests (Python) for the function at the cursor. Properties are inferred from the function's name and shape, never guessed: determinism and a defined result for every function, commutativity for a two-number addition, reverse-twice and sort and case identities when the name says so, a boolean result for is*/has*/can* names. A function that touches the network, a database, files, the clock or environment variables gets no property test — running it a hundred times with random inputs would be wrong, and the command says so.
 
 ## What's new in 0.4.3
 

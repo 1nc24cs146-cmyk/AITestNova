@@ -2007,3 +2007,315 @@ export function findFunctionAtLine(sourceText: string, language: string, line: n
   }
   return best;
 }
+
+// ---- Per-file coverage for Python, Java and C# (0.4.4) ----
+// The same shape as parseIstanbulCoverage: per-file % plus uncovered
+// lines, worst file first, overall %. Read what the runner wrote,
+// never invent numbers. Coverage.py writes coverage.json
+// ("coverage json"); JaCoCo writes jacoco.xml; coverlet writes a
+// Cobertura XML (coverage.cobertura.xml). All three are parsed with
+// the same regex-over-XML style as parseCoverageXml — Node has no
+// built-in XML parser and the extension takes no XML dependency.
+
+// coverage.py JSON: files keyed by path, each with a summary holding
+// percent_covered, num_statements and missing_lines.
+export function parseCoveragePyJson(jsonText: string): IstanbulCoverage | null {
+  let data: unknown;
+  try { data = JSON.parse(jsonText); } catch { return null; }
+  const root = data as { files?: Record<string, { summary?: { percent_covered?: number; num_statements?: number; missing_lines?: number[] }; missing_lines?: number[]; executed_lines?: number[] }>; totals?: { percent_covered?: number } };
+  if (!root || typeof root !== 'object' || !root.files || typeof root.files !== 'object') { return null; }
+  const files: IstanbulFileCoverage[] = [];
+  for (const [file, entry] of Object.entries(root.files)) {
+    if (!entry || typeof entry !== 'object') { continue; }
+    const summary = entry.summary ?? {};
+    const missing = Array.isArray(summary.missing_lines) ? summary.missing_lines : Array.isArray(entry.missing_lines) ? entry.missing_lines : [];
+    const total = typeof summary.num_statements === 'number' ? summary.num_statements : (Array.isArray(entry.executed_lines) ? entry.executed_lines.length + missing.length : 0);
+    if (!total) { continue; }
+    const pct = typeof summary.percent_covered === 'number'
+      ? Math.round(summary.percent_covered * 10) / 10
+      : Math.round(((total - missing.length) / total) * 1000) / 10;
+    files.push({ file, pct, covered: total - missing.length, total, uncoveredLines: [...missing].sort((a, b) => a - b) });
+  }
+  if (!files.length) { return null; }
+  files.sort((a, b) => a.pct - b.pct || a.file.localeCompare(b.file));
+  const total = files.reduce((a, f) => a + f.total, 0);
+  const covered = files.reduce((a, f) => a + f.covered, 0);
+  return { files, overallPct: Math.round((covered / total) * 1000) / 10 };
+}
+
+// JaCoCo XML: <report><package name="com/x"><sourcefile name="Foo.java">
+// with <line nr="3" mi="2" ci="1" .../> — a line is covered when ci > 0.
+// Overall from the report-level <counter type="LINE" missed= covered=>.
+export function parseJacocoXml(xml: string): IstanbulCoverage | null {
+  const files: IstanbulFileCoverage[] = [];
+  const pkgRe = /<package\s+name="([^"]*)">([\s\S]*?)<\/package>/g;
+  let pkg: RegExpExecArray | null;
+  let sawAny = false;
+  while ((pkg = pkgRe.exec(xml)) !== null) {
+    const pkgName = pkg[1];
+    const sfRe = /<sourcefile\s+name="([^"]*)">([\s\S]*?)<\/sourcefile>/g;
+    let sf: RegExpExecArray | null;
+    while ((sf = sfRe.exec(pkg[2])) !== null) {
+      sawAny = true;
+      const lineRe = /<line\s+nr="(\d+)"\s+mi="(\d+)"\s+ci="(\d+)"[^/]*\/>/g;
+      let line: RegExpExecArray | null;
+      let total = 0; let covered = 0;
+      const uncovered: number[] = [];
+      while ((line = lineRe.exec(sf[2])) !== null) {
+        total += 1;
+        if (Number(line[3]) > 0) { covered += 1; }
+        else { uncovered.push(Number(line[1])); }
+      }
+      if (!total) { continue; }
+      files.push({ file: `${pkgName}/${sf[1]}`, pct: Math.round((covered / total) * 1000) / 10, covered, total, uncoveredLines: uncovered.sort((a, b) => a - b) });
+    }
+  }
+  if (!sawAny || !files.length) { return null; }
+  files.sort((a, b) => a.pct - b.pct || a.file.localeCompare(b.file));
+  const total = files.reduce((a, f) => a + f.total, 0);
+  const covered = files.reduce((a, f) => a + f.covered, 0);
+  return { files, overallPct: Math.round((covered / total) * 1000) / 10 };
+}
+
+// Cobertura XML (what coverlet writes for C#, and what many Java
+// tools write too): <coverage line-rate="0.8"><classes><class
+// filename="src/Foo.cs" line-rate="0.75"><lines><line number="3"
+// hits="0"/>. A line is uncovered when hits == 0.
+export function parseCoberturaXml(xml: string): IstanbulCoverage | null {
+  const files: IstanbulFileCoverage[] = [];
+  const classRe = /<class\s+[^>]*filename="([^"]*)"[^>]*>([\s\S]*?)<\/class>/g;
+  let cls: RegExpExecArray | null;
+  let sawAny = false;
+  while ((cls = classRe.exec(xml)) !== null) {
+    sawAny = true;
+    const lineRe = /<line\s+number="(\d+)"\s+hits="(\d+)"[^/]*\/>/g;
+    let line: RegExpExecArray | null;
+    let total = 0; let covered = 0;
+    const uncovered: number[] = [];
+    while ((line = lineRe.exec(cls[2])) !== null) {
+      total += 1;
+      if (Number(line[2]) > 0) { covered += 1; }
+      else { uncovered.push(Number(line[1])); }
+    }
+    if (!total) { continue; }
+    files.push({ file: cls[1], pct: Math.round((covered / total) * 1000) / 10, covered, total, uncoveredLines: uncovered.sort((a, b) => a - b) });
+  }
+  if (!sawAny || !files.length) { return null; }
+  files.sort((a, b) => a.pct - b.pct || a.file.localeCompare(b.file));
+  const total = files.reduce((a, f) => a + f.total, 0);
+  const covered = files.reduce((a, f) => a + f.covered, 0);
+  return { files, overallPct: Math.round((covered / total) * 1000) / 10 };
+}
+
+// ---- Property-based tests (0.4.4) ----
+// fast-check for JavaScript/TypeScript, Hypothesis for Python. The
+// properties are inferred from the function's name and shape, never
+// from guessing what the function means: determinism and a defined
+// result for every function; commutativity only for a two-number
+// function whose name and body say addition; reverse/sort/case
+// identities only when the name says so; a boolean result only for
+// is*/has*/can* names. A function that touches the network, a
+// database, files, the clock or env (hasDangerousDeps) gets no
+// property test — running it a hundred times would be wrong, and the
+// caller says so instead of generating it anyway.
+
+export type PropertyKind = 'determinism' | 'defined' | 'commutative' | 'reverse' | 'sorted' | 'case-idempotent' | 'predicate' | 'non-negative-number';
+export interface PropertyTest { kind: PropertyKind; description: string; }
+
+function inferProperties(fn: ParsedFunction, body: string): PropertyTest[] {
+  const props: PropertyTest[] = [
+    { kind: 'determinism', description: 'same input gives the same output every time' },
+    { kind: 'defined', description: 'result is defined for valid inputs' },
+  ];
+  const name = fn.name;
+  const paramCount = fn.params.length;
+  if (paramCount === 2 && /add|sum|plus|total|combine/i.test(name) && /\+/.test(body)) {
+    props.push({ kind: 'commutative', description: 'f(a, b) equals f(b, a)' });
+  }
+  if (paramCount === 1 && /reverse/i.test(name)) {
+    props.push({ kind: 'reverse', description: 'reversing twice returns the original' });
+  }
+  if (paramCount === 1 && /sort/i.test(name)) {
+    props.push({ kind: 'sorted', description: 'the result is sorted' });
+  }
+  if (paramCount === 1 && /upper|lower/i.test(name)) {
+    props.push({ kind: 'case-idempotent', description: 'applying it twice changes nothing the second time' });
+  }
+  if (/^(is|has|can|should)[A-Z]/.test(name)) {
+    props.push({ kind: 'predicate', description: 'the result is a boolean' });
+  }
+  if (paramCount === 1 && /length|count|size/i.test(name)) {
+    props.push({ kind: 'non-negative-number', description: 'the result is a number >= 0' });
+  }
+  return props;
+}
+
+// Why a property test cannot be generated, in plain words. Empty
+// means it can. Checked by the caller before generating, so the
+// command can say the real reason instead of a generic refusal.
+export function propertyTestBlockers(fn: ParsedFunction, sourceText: string, language: string): string[] {
+  const blockers: string[] = [];
+  if (language !== 'javascript' && language !== 'python') {
+    blockers.push(`property-based tests are built for JavaScript/TypeScript and Python in 0.4.4 — ${language} is not supported yet`);
+  }
+  if (isAsyncFunction(sourceText, fn)) {
+    blockers.push('the function is async — property tests run it many times and awaiting inside a property needs a runner the template does not set up yet');
+  }
+  const body = functionBody(sourceText, fn, language);
+  if (hasDangerousDeps(body)) {
+    blockers.push('the function touches the network, a database, files, the clock or environment variables — running it a hundred times with random inputs would be wrong');
+  }
+  return blockers;
+}
+
+function jsArbitrary(rawParam: string, name: string): string {
+  const type = paramType(rawParam).toLowerCase();
+  const lower = `${rawParam} ${name}`.toLowerCase();
+  if (type === 'number' || type === 'int' || type === 'integer' || /\b(count|index|id|age|num|n)\b/.test(lower)) { return 'fc.integer()'; }
+  if (type === 'string' || /\b(name|text|message|title|label|str|s)\b/.test(lower)) { return 'fc.string()'; }
+  if (type === 'boolean' || type === 'bool') { return 'fc.boolean()'; }
+  if (/\[\]/.test(rawParam) || /array/i.test(type)) { return 'fc.array(fc.integer())'; }
+  // Untyped: integers. Anything() would throw strings, objects and
+  // arrays at a function that only accepts numbers — and the
+  // commutative property is only true for numbers at all.
+  return 'fc.integer()';
+}
+
+function pyStrategy(rawParam: string, name: string): string {
+  const type = paramType(rawParam).toLowerCase();
+  const lower = `${rawParam} ${name}`.toLowerCase();
+  if (type === 'int' || type === 'float' || /\b(count|index|id|age|num|n)\b/.test(lower)) { return 'st.integers()'; }
+  if (type === 'str' || /\b(name|text|message|title|label|s)\b/.test(lower)) { return 'st.text()'; }
+  if (type === 'bool') { return 'st.booleans()'; }
+  if (/list/i.test(type)) { return 'st.lists(st.integers())'; }
+  // Untyped: integers — a mixed strategy would feed text to a
+  // function that only accepts numbers and the property would fail
+  // on the input, not on the code.
+  return 'st.integers()';
+}
+
+// Arbitraries for one property, not one function: commutativity is
+// only true for numbers, reverse only makes sense on a string, sort
+// only on an array. The generic properties use the per-parameter
+// arbitraries; the named properties override them.
+function jsArbitrariesFor(kind: PropertyKind, fn: ParsedFunction, rawParams: string[]): string {
+  if (kind === 'commutative') { return 'fc.integer(), fc.integer()'; }
+  if (kind === 'reverse' || kind === 'case-idempotent') { return 'fc.string()'; }
+  if (kind === 'sorted') { return 'fc.array(fc.integer())'; }
+  return fn.params.map((p, i) => jsArbitrary(rawParams[i] ?? p, p)).join(', ');
+}
+
+function pyStrategiesFor(kind: PropertyKind, fn: ParsedFunction, rawParams: string[]): string {
+  if (kind === 'commutative') { return `${fn.params[0]}=st.integers(), ${fn.params[1]}=st.integers()`; }
+  if (kind === 'reverse' || kind === 'case-idempotent') { return `${fn.params[0]}=st.text()`; }
+  if (kind === 'sorted') { return `${fn.params[0]}=st.lists(st.integers())`; }
+  return fn.params.map((p, i) => `${p}=${pyStrategy(rawParams[i] ?? p, p)}`).join(', ');
+}
+
+function jsPropertyBody(kind: PropertyKind, fn: ParsedFunction, useAssert = false): string {
+  const call = `${fn.name}(${fn.params.join(', ')})`;
+  // node:test has no expect() — the same properties with assert calls.
+  const eq = (a: string, b: string) => useAssert ? `assert.deepEqual(${a}, ${b});` : `expect(${a}).toEqual(${b});`;
+  const defined = (a: string) => useAssert ? `assert.notEqual(${a}, undefined);` : `expect(${a}).not.toBeUndefined();`;
+  const gte = (a: string, b: string) => useAssert ? `assert.ok(${a} >= ${b});` : `expect(${a}).toBeGreaterThanOrEqual(${b});`;
+  const typeIs = (a: string, t: string) => useAssert ? `assert.equal(typeof ${a}, '${t}');` : `expect(typeof ${a}).toBe('${t}');`;
+  switch (kind) {
+    case 'determinism': return eq(call, call);
+    case 'defined': return defined(call);
+    case 'commutative': {
+      const [a, b] = fn.params;
+      return eq(`${fn.name}(${a}, ${b})`, `${fn.name}(${b}, ${a})`);
+    }
+    case 'reverse': return eq(`${fn.name}(${fn.name}(${fn.params[0]}))`, fn.params[0]);
+    case 'sorted': {
+      const r = 'result';
+      return `const ${r} = ${call};\n      for (let i = 1; i < ${r}.length; i++) { ${gte(`${r}[i]`, `${r}[i - 1]`)} }`;
+    }
+    case 'case-idempotent': return eq(`${fn.name}(${fn.name}(${fn.params[0]}))`, `${fn.name}(${fn.params[0]})`);
+    case 'predicate': return typeIs(call, 'boolean');
+    case 'non-negative-number': return `const r = ${call};\n      ${typeIs('r', 'number')}\n      ${gte('r', '0')}`;
+  }
+}
+
+function pyPropertyBody(kind: PropertyKind, fn: ParsedFunction): string {
+  const call = `${fn.name}(${fn.params.join(', ')})`;
+  switch (kind) {
+    case 'determinism': return `assert ${call} == ${call}`;
+    case 'defined': return `assert ${call} is not None`;
+    case 'commutative': {
+      const [a, b] = fn.params;
+      return `assert ${fn.name}(${a}, ${b}) == ${fn.name}(${b}, ${a})`;
+    }
+    case 'reverse': return `assert ${fn.name}(${fn.name}(${fn.params[0]})) == ${fn.params[0]}`;
+    case 'sorted': {
+      const r = 'result';
+      return `${r} = ${call}\n    assert all(${r}[i] >= ${r}[i - 1] for i in range(1, len(${r})))`;
+    }
+    case 'case-idempotent': return `assert ${fn.name}(${fn.name}(${fn.params[0]})) == ${fn.name}(${fn.params[0]})`;
+    case 'predicate': return `assert isinstance(${call}, bool)`;
+    case 'non-negative-number': return `r = ${call}\n    assert isinstance(r, (int, float)) and r >= 0`;
+  }
+}
+
+export function generatePropertyTests(fn: ParsedFunction, sourceFile: string, language: string, sourceText: string, testFramework: TestFramework = 'jest'): string | null {
+  if (propertyTestBlockers(fn, sourceText, language).length) { return null; }
+  const body = functionBody(sourceText, fn, language);
+  const props = inferProperties(fn, body);
+  const base = sourceFile.replace(/\.[^.]+$/, '').split('/').pop();
+  const rawParams = fn.rawParams ?? fn.params;
+  if (language === 'python') {
+    const cases = props.map((p) => {
+      const params = pyStrategiesFor(p.kind, fn, rawParams);
+      const testName = `test_${fn.name}_${p.kind.replace(/-/g, '_')}`;
+      const bodyLines = pyPropertyBody(p.kind, fn).split('\n').map((l) => `    ${l}`).join('\n');
+      return `@given(${params})\ndef ${testName}(${fn.params.join(', ')}):\n    # Property: ${p.description}\n${bodyLines}\n`;
+    }).join('\n');
+    return `# Generated by AITestNova — property-based tests for ${fn.name} in ${sourceFile}\n# Requires hypothesis (pip install hypothesis). Each property runs many random inputs.\n# Review and edit before committing.\nfrom hypothesis import given, strategies as st\n\n${cases}`;
+  }
+  const args = fn.params.join(', ');
+  const useAssert = testFramework === 'node';
+  const cases = props.map((p) => {
+    const arbitraries = jsArbitrariesFor(p.kind, fn, rawParams);
+    const bodyLines = jsPropertyBody(p.kind, fn, useAssert).split('\n').map((l) => `      ${l}`).join('\n');
+    return `test('${fn.name} — ${p.description}', () => {\n    fc.assert(fc.property(${arbitraries}, (${args}) => {\n${bodyLines}\n    }));\n  });`;
+  }).join('\n');
+  const imports = testFramework === 'vitest'
+    ? `import { describe, test, expect } from 'vitest';\nimport fc from 'fast-check';`
+    : testFramework === 'node'
+      ? `import { test, describe } from 'node:test';\nimport assert from 'node:assert/strict';\nimport fc from 'fast-check';`
+      : `import fc from 'fast-check';`;
+  return `// Generated by AITestNova — property-based tests for ${fn.name} in ${sourceFile}\n// Requires fast-check (npm install -D fast-check). Each property runs many random inputs.\n// Review and edit before committing.\n${imports}\nimport { ${fn.name} } from './${base}';\n\ndescribe('${fn.name} properties', () => {\n${cases}\n});\n`;
+}
+
+// Go coverprofile, per file, in the shared IstanbulCoverage shape:
+// covered/total statement counts plus uncovered lines, so the Health
+// tab can show Go files the same way it shows JS/TS ones. Blocks are
+// counted by their statement count, the same as parseGoCoverprofile.
+export function parseGoCoverPerFile(text: string): IstanbulCoverage | null {
+  const byFile = new Map<string, { total: number; covered: number; uncovered: Set<number> }>();
+  for (const raw of text.split(/\r?\n/)) {
+    const m = /^(.+\.go):(\d+)\.(\d+),(\d+)\.(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(raw.trim());
+    if (!m) { continue; }
+    const entry = byFile.get(m[1]) ?? { total: 0, covered: 0, uncovered: new Set<number>() };
+    const stmts = Number(m[6]); const count = Number(m[7]);
+    entry.total += stmts;
+    if (count > 0) { entry.covered += stmts; }
+    else {
+      const start = Number(m[2]); const end = Number(m[4]);
+      for (let l = start; l <= Math.min(end, start + 49); l++) { entry.uncovered.add(l); }
+    }
+    byFile.set(m[1], entry);
+  }
+  if (!byFile.size) { return null; }
+  const files: IstanbulFileCoverage[] = [...byFile.entries()].map(([file, e]) => ({
+    file,
+    pct: e.total ? Math.round((e.covered / e.total) * 1000) / 10 : 0,
+    covered: e.covered,
+    total: e.total,
+    uncoveredLines: [...e.uncovered].sort((a, b) => a - b),
+  }));
+  files.sort((a, b) => a.pct - b.pct || a.file.localeCompare(b.file));
+  const total = files.reduce((a, f) => a + f.total, 0);
+  const covered = files.reduce((a, f) => a + f.covered, 0);
+  return { files, overallPct: total ? Math.round((covered / total) * 1000) / 10 : 0 };
+}

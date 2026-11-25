@@ -4,12 +4,14 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { buildMutantKillPrompt, buildUncoveredLinesPrompt, coverageDelta, detectTestFramework, findFunctionAtLine, formatUncoveredLines, generateCypressTests, generatePlaywrightTests, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoverageXml, parseExpressRoutes, parseFastifyRoutes, parseFunctions, parseGoCoverprofile, parseGoCoverUncovered, parseIstanbulCoverage, parseJestCoverageJson, pickBestCandidate, testFileName } from './testgen';
+import { buildMutantKillPrompt, buildUncoveredLinesPrompt, coverageDelta, detectTestFramework, findFunctionAtLine, formatUncoveredLines, generateCypressTests, generatePlaywrightTests, generatePropertyTests, generateTestFor, generateTestsForFile, generateTestsFromSpec, languageFromFile, parseCoberturaXml, parseCoveragePyJson, parseCoverageXml, parseExpressRoutes, parseFastifyRoutes, parseFunctions, parseGoCoverPerFile, parseGoCoverprofile, parseGoCoverUncovered, parseIstanbulCoverage, parseJacocoXml, parseJestCoverageJson, pickBestCandidate, propertyTestBlockers, testFileName } from './testgen';
 import { ApiSuite, dedupRecorded, newId, recordedTestsToYaml, replayTest, sendRequest, stabilityCheck, RecordedTest, ReplayResult } from './record';
 import { detectStack, generateCIWorkflow } from './ci';
 import { checkSnapshots, heuristicCheck, TestSnapshot } from './stale';
 import { applyMutant, generateMutants, Mutant, mutationScore } from './mutation';
 import { flakyTestIds, FlakyStat, formatFlakyExplanation, quarantineSuiteName, recordFlakyStats, trendLines } from './flaky';
+import { buildFixTestPrompt, parseTestFailure, suggestTestFix } from './fixtest';
+import { generateOpenApiTests, parseOpenApiSpec } from './openapi';
 import { escapeHtml } from './textutil';
 
 interface State { recorded: RecordedTest[]; extraPrompt: string; baselineCoverage?: number; lastCoverage?: number; lastReplay?: { pass: number; total: number; at: string }; normalizeVolatile?: boolean; suites?: ApiSuite[]; replayHistory?: { at: string; pass: number; total: number }[]; coverageHistory?: { at: string; value: number; rel: string }[]; stabilityHistory?: { at: string; pass: number; total: number }[]; testSnapshots?: TestSnapshot[]; flakyStats?: Record<string, FlakyStat>; quarantinedIds?: string[]; mutationHistory?: { at: string; file: string; score: number | null; killed: number; survived: number; unknown: number }[]; survivedMutants?: { file: string; mutants: Mutant[]; at: string }[]; }
@@ -235,12 +237,19 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     this.healthText(`Trends (last ${hist.length} replay run(s), dashboard keeps 20):\n${trend}\n\nCoverage trend:\n${cov}\n\nFlaky tests (failed at least once):\n${flaky}\n\nQuarantined:\n${quarantined}\n\nRecent mutation scores:\n${mut}`);
   }
   private readCoverageValue(folder: string): { value: number; rel: string } | { error: string; rel: string } | null {
-    const candidates = ['coverage/coverage.xml', 'coverage/cobertura-coverage.xml', 'coverage/coverage-final.json', 'coverage/coverage-summary.json', 'coverage/coverage.out'];
+    // Overall % only — the per-file view lives in showPerFileCoverage.
+    // XML is tried as JaCoCo, then Cobertura, then the generic
+    // line-rate reader: the three formats are told apart by what they
+    // contain (<sourcefile>, <class filename=>, line-rate=), so the
+    // order is safe. A .json is tried as Jest summary, then coverage.py.
+    const candidates = ['coverage/coverage.xml', 'coverage/cobertura-coverage.xml', 'coverage/coverage.cobertura.xml', 'coverage/coverage-final.json', 'coverage/coverage-summary.json', 'coverage/coverage.json', 'coverage/jacoco.xml', 'coverage/jacocoTestReport.xml', 'coverage/coverage.out'];
     for (const rel of candidates) {
       const p = path.join(folder, rel);
       if (!fs.existsSync(p)) { continue; }
       try {
         const text = fs.readFileSync(p, 'utf8');
+        const perFile = this.parsePerFileCoverage(rel, text);
+        if (perFile) { return { value: perFile.overallPct, rel }; }
         const xml = rel.endsWith('.xml') ? parseCoverageXml(text) : null;
         if (xml) { return { value: xml.lineRate, rel }; }
         const jest = rel.endsWith('.json') ? parseJestCoverageJson(text) : null;
@@ -252,28 +261,55 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     }
     return null;
   }
-  // JS/TS per-file coverage (0.4.0): parse the Istanbul coverage-final.json
-  // the runner already wrote and show each file's % plus its uncovered
-  // lines, worst file first — the same read-only, never-invent-numbers
-  // rule as the Go coverprofile reader, and reported through the Health
-  // tab like the stale check, mutation score and trends.
-  private async showJsCoverage(): Promise<void> {
+  // Per-file coverage from any reader that returns the shared
+  // IstanbulCoverage shape. The filename decides which reader to try
+  // first, but every reader is tried — a coverage.json could be a Jest
+  // summary or a coverage.py report, and the content decides.
+  private parsePerFileCoverage(rel: string, text: string): { files: { file: string; pct: number; covered: number; total: number; uncoveredLines: number[] }[]; overallPct: number } | null {
+    if (rel.endsWith('.json')) {
+      return parseIstanbulCoverage(text) ?? parseCoveragePyJson(text);
+    }
+    if (rel.endsWith('.xml')) {
+      return parseJacocoXml(text) ?? parseCoberturaXml(text);
+    }
+    if (rel.endsWith('.out')) {
+      return parseGoCoverPerFile(text);
+    }
+    return null;
+  }
+  // Per-file coverage (0.4.0 for JS/TS, 0.4.4 for Go, Python, Java,
+  // C#): parse the coverage file the runner already wrote and show
+  // each file's % plus its uncovered lines, worst file first — the
+  // same read-only, never-invent-numbers rule as the overall reader,
+  // reported through the Health tab like the stale check, mutation
+  // score and trends. The old 'jsCoverage' message still calls this,
+  // so the previous button keeps working.
+  private async showPerFileCoverage(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!folder) { this.healthText('JS/TS coverage per file: open a workspace folder first.'); return; }
-    const rel = 'coverage/coverage-final.json';
-    const p = path.join(folder, rel);
-    if (!fs.existsSync(p)) {
-      this.healthText(`JS/TS coverage per file: no ${rel} found.\nRun your JS/TS tests with coverage first, e.g. jest --coverage or npx nyc npm test — AITestNova reads the file your runner writes, it does not measure coverage itself.`);
+    if (!folder) { this.healthText('Coverage per file: open a workspace folder first.'); return; }
+    const candidates: { rel: string; label: string }[] = [
+      { rel: 'coverage/coverage-final.json', label: 'JS/TS (jest --coverage / nyc)' },
+      { rel: 'coverage/coverage.out', label: 'Go (go test -coverprofile=coverage/coverage.out)' },
+      { rel: 'coverage/coverage.json', label: 'Python (pytest --cov --cov-report=json:coverage/coverage.json)' },
+      { rel: 'coverage/jacoco.xml', label: 'Java (JaCoCo)' },
+      { rel: 'coverage/jacocoTestReport.xml', label: 'Java (JaCoCo)' },
+      { rel: 'coverage/coverage.cobertura.xml', label: 'C# (coverlet / dotnet test --collect:"XPlat Code Coverage")' },
+      { rel: 'coverage/cobertura.xml', label: 'C# (coverlet)' },
+    ];
+    for (const { rel, label } of candidates) {
+      const p = path.join(folder, rel);
+      if (!fs.existsSync(p)) { continue; }
+      let parsed;
+      try { parsed = this.parsePerFileCoverage(rel, fs.readFileSync(p, 'utf8')); } catch (e) { this.healthText(`Coverage per file: ${rel} was found but could not be read (${e instanceof Error ? e.message.split('\n')[0] : String(e)}). Re-run your tests with coverage to regenerate it.`); return; }
+      if (!parsed) {
+        this.healthText(`Coverage per file: ${rel} was found but contained no usable per-file data. Re-run your tests with coverage to regenerate it — AITestNova will not invent a number from a broken file.`);
+        return;
+      }
+      const lines = parsed.files.map((f) => `${f.pct}%  ${path.relative(folder, f.file) || f.file}  (${f.covered}/${f.total} statements)${f.uncoveredLines.length ? `\n    uncovered lines: ${formatUncoveredLines(f.uncoveredLines)}` : '\n    fully covered'}`);
+      this.healthText(`Coverage per file — ${label} (${rel}), overall ${parsed.overallPct}%:\n\n${lines.join('\n')}\n\nWorst file first. Uncovered lines are the lines the runner recorded with 0 hits. Use "Generate tests for uncovered lines" on an open file to target them.`);
       return;
     }
-    let parsed;
-    try { parsed = parseIstanbulCoverage(fs.readFileSync(p, 'utf8')); } catch (e) { parsed = null; this.healthText(`JS/TS coverage per file: ${rel} was found but could not be read (${e instanceof Error ? e.message.split('\n')[0] : String(e)}). Re-run your tests with coverage to regenerate it.`); return; }
-    if (!parsed) {
-      this.healthText(`JS/TS coverage per file: ${rel} was found but contained no usable per-file statement data. Re-run your tests with coverage (jest --coverage) to regenerate it — AITestNova will not invent a number from a broken file.`);
-      return;
-    }
-    const lines = parsed.files.map((f) => `${f.pct}%  ${path.relative(folder, f.file) || f.file}  (${f.covered}/${f.total} statements)${f.uncoveredLines.length ? `\n    uncovered lines: ${formatUncoveredLines(f.uncoveredLines)}` : '\n    fully covered'}`);
-    this.healthText(`JS/TS coverage per file (${rel}) — overall ${parsed.overallPct}%:\n\n${lines.join('\n')}\n\nWorst file first. Uncovered lines are the statement starts Istanbul recorded with 0 hits.`);
+    this.healthText('Coverage per file: no coverage file found.\nRun your tests with coverage first — e.g. jest --coverage, go test -coverprofile=coverage/coverage.out, pytest --cov --cov-report=json:coverage/coverage.json, a JaCoCo report, or dotnet test with XPlat Code Coverage — AITestNova reads the file your runner writes, it does not measure coverage itself.');
   }
   private async save(): Promise<void> { await this.context.globalState.update('aitestnova.state', this.state); }
   private parseHeaders(text: string): { key: string; value: string }[] {
@@ -287,7 +323,10 @@ class AITestNovaProvider implements vscode.WebviewViewProvider {
     if (m.type === 'ready') { this.postRecorded(); this.postSuites(); return; }
     if (m.type === 'downloads') { void this.postDownloads(); return; }
     if (m.type === 'stale') { await this.checkStale(); return; }
-    if (m.type === 'jsCoverage') { await this.showJsCoverage(); return; }
+    if (m.type === 'jsCoverage' || m.type === 'perFileCoverage') { await this.showPerFileCoverage(); return; }
+    if (m.type === 'fixFailing') { await fixFailingTest(); return; }
+    if (m.type === 'openApi') { await generateFromOpenApi(); return; }
+    if (m.type === 'generateProperty') { await generatePropertyForFunctionAtCursor(); return; }
     if (m.type === 'addCI') { await addCIWorkflow(); return; }
     if (m.type === 'mutation') { await this.runMutation(); return; }
     if (m.type === 'trends') { this.showTrends(); return; }
@@ -565,6 +604,98 @@ async function generateE2ETests(kind: 'playwright' | 'cypress'): Promise<void> {
     : `AITestNova: no routes found in this file, so the ${kind === 'playwright' ? 'Playwright' : 'Cypress'} spec has one test against http://localhost:3000 — set the URL to your running app and add one test per route.`);
 }
 
+// ---- Fix a failing test (0.4.4) ----
+// Runs the configured test command once, parses the first failure out
+// of the output, and offers a fix the same way generation works:
+// AI first (the configured provider/models, best wins), then the
+// template fix, then — when neither can fix it — the failure in plain
+// words and no change at all. The fixed test opens for review, never
+// written over the test file by itself.
+async function fixFailingTest(): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) { vscode.window.showWarningMessage('AITestNova: open a workspace folder first.'); return; }
+  const cmd = await detectTestCommand(folder);
+  if (!cmd) { vscode.window.showWarningMessage('AITestNova: no test command detected for this folder and none is set. Set one in Settings → AITestNova: Test Command, then re-run.'); return; }
+  const out = vscode.window.createOutputChannel('AITestNova Fix Failing Test');
+  out.show();
+  out.appendLine(`Running: ${cmd}`);
+  let output = '';
+  try {
+    await execAsync(cmd, { cwd: folder, timeout: 120000 });
+    vscode.window.showInformationMessage('AITestNova: tests passed — nothing to fix.');
+    return;
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    output = `${err.stdout ?? ''}\n${err.stderr ?? ''}\n${err.message ?? ''}`;
+  }
+  const failure = parseTestFailure(output);
+  if (!failure) {
+    out.appendLine('Could not find a recognisable failure in the test output — the output is below, unchanged.\n\n' + output.slice(0, 4000));
+    vscode.window.showWarningMessage('AITestNova: the tests failed, but I could not work out which test or why from the output. The full output is in the "AITestNova Fix Failing Test" channel.');
+    return;
+  }
+  const editor = vscode.window.activeTextEditor;
+  const testFile = failure.file ? path.resolve(folder, failure.file) : editor?.document.fileName ?? '';
+  const testText = testFile && fs.existsSync(testFile) ? fs.readFileSync(testFile, 'utf8') : editor?.document.getText() ?? '';
+  const sourceText = editor && editor.document.fileName !== testFile ? editor.document.getText() : '';
+  const ai = extContext && testText ? await tryAIMulti(extContext, sourceText || testText, testFile || 'test', buildFixTestPrompt(testText, sourceText, failure)) : null;
+  if (ai && 'content' in ai) {
+    await openGenerated(ai.content, testFile || testFileName(editor?.document.fileName ?? 'test.js', languageFromFile(editor?.document.fileName ?? 'test.js')));
+    vscode.window.showInformationMessage(`AITestNova: fix ready for ${failure.testName ?? 'the failing test'} — best of ${ai.tried.length} model(s): ${ai.model}. Review it, then save it over the test file.`);
+    return;
+  }
+  if (ai && 'failed' in ai) { vscode.window.showWarningMessage(`AITestNova: AI fix failed — ${ai.errors[0]}${ai.errors.length > 1 ? ` (+${ai.errors.length - 1} more)` : ''} Tried the template fix instead.`); }
+  const fix = suggestTestFix(testText, failure);
+  if (fix.fixedTest && testFile) {
+    await openGenerated(fix.fixedTest, testFile);
+    out.appendLine(fix.explanation);
+    vscode.window.showInformationMessage(`AITestNova: ${fix.explanation} Review the fixed test, then save it over the test file.`);
+    return;
+  }
+  out.appendLine(fix.explanation);
+  vscode.window.showInformationMessage(`AITestNova: ${fix.explanation} See the "AITestNova Fix Failing Test" channel for the full detail.`);
+}
+
+// ---- Generate API tests from an OpenAPI spec (0.4.4) ----
+async function generateFromOpenApi(): Promise<void> {
+  const picked = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { 'OpenAPI spec': ['json', 'yaml', 'yml'] } });
+  if (!picked?.length) { return; }
+  let text: string;
+  try { text = fs.readFileSync(picked[0].fsPath, 'utf8'); } catch (e) { vscode.window.showErrorMessage(`AITestNova: could not read that file — ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`); return; }
+  const spec = parseOpenApiSpec(text);
+  if (!spec) {
+    vscode.window.showWarningMessage('AITestNova: that file is not an OpenAPI 3 spec I can read. It needs openapi: 3.x and a paths section with at least one operation — JSON, or block-style YAML (anchors and flow style are not supported).');
+    return;
+  }
+  const framework = resolveTestFramework();
+  const content = generateOpenApiTests(spec, picked[0].fsPath, framework === 'mocha' || framework === 'jasmine' ? 'jest' : framework);
+  const base = picked[0].fsPath.replace(/\.[^.]+$/, '').split('/').pop() ?? 'api';
+  await openGenerated(content, `${base}.api.test.ts`);
+  vscode.window.showInformationMessage(`AITestNova: API tests for ${spec.operations.length} operation(s) from ${spec.title} ready — start your API first, then run. Review them, then save.`);
+}
+
+// ---- Property-based tests (0.4.4) ----
+async function generatePropertyForFunctionAtCursor(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { vscode.window.showWarningMessage('AITestNova: open a code file first.'); return; }
+  const doc = editor.document; const lang = languageFromFile(doc.fileName);
+  if (lang === 'unknown') { vscode.window.showWarningMessage('AITestNova: this file type is not supported yet. Supported: JavaScript/TypeScript, Python, Java, Go, C, C++, C#, Rust, Ruby, PHP, Kotlin, Swift, Svelte.'); return; }
+  const fns = parseFunctions(doc.getText(), lang);
+  if (!fns.length) { vscode.window.showWarningMessage('AITestNova: no functions found in this file.'); return; }
+  const line = editor.selection.active.line;
+  const fn = [...fns].sort((a, b) => Math.abs(a.line - line) - Math.abs(b.line - line))[0];
+  const blockers = propertyTestBlockers(fn, doc.getText(), lang);
+  if (blockers.length) {
+    vscode.window.showInformationMessage(`AITestNova: no property test for ${fn.name} — ${blockers.join(' ')}`);
+    return;
+  }
+  const content = generatePropertyTests(fn, doc.fileName, lang, doc.getText(), resolveTestFramework());
+  if (!content) { vscode.window.showInformationMessage(`AITestNova: no property test for ${fn.name} — the function could not be used as-is.`); return; }
+  await openGenerated(content, testFileName(doc.fileName, lang));
+  await recordSnapshots(doc, [fn]);
+  vscode.window.showInformationMessage(`AITestNova: property-based tests for ${fn.name} ready — review them, then save. ${lang === 'python' ? 'They need hypothesis (pip install hypothesis).' : 'They need fast-check (npm install -D fast-check).'}`);
+}
+
 // ---- Targeted test generation (0.4.1) ----
 // Both commands use the same write path as the existing generation:
 // openGenerated() previews the test and saveGeneratedToTestFile()
@@ -602,11 +733,34 @@ async function generateForUncoveredLines(): Promise<void> {
         const rel = path.relative(folder, doc.fileName);
         const entry = files?.find((f) => f.file === doc.fileName || f.file.endsWith(rel) || doc.fileName.endsWith(f.file));
         if (entry) { uncovered = entry.uncoveredLines; source = 'coverage/coverage.out'; }
-      } catch { /* fall through to the no-data message */ }
+      } catch { /* fall through to the next source */ }
+    }
+  }
+  // Python (coverage.py), Java (JaCoCo) and C# (Cobertura/coverlet)
+  // in 0.4.4: the same per-file shape, matched by relative path or
+  // by suffix, so a report that stores absolute paths still matches.
+  if (uncovered === null) {
+    const rel = path.relative(folder, doc.fileName);
+    const match = (files: { file: string; uncoveredLines: number[] }[] | null | undefined) =>
+      files?.find((f) => f.file === doc.fileName || f.file.endsWith(rel) || doc.fileName.endsWith(f.file) || rel.endsWith(f.file));
+    const extra: { rel: string; parse: (text: string) => { files: { file: string; uncoveredLines: number[] }[] } | null }[] = [
+      { rel: 'coverage/coverage.json', parse: (t) => parseCoveragePyJson(t) },
+      { rel: 'coverage/jacoco.xml', parse: (t) => parseJacocoXml(t) },
+      { rel: 'coverage/jacocoTestReport.xml', parse: (t) => parseJacocoXml(t) },
+      { rel: 'coverage/coverage.cobertura.xml', parse: (t) => parseCoberturaXml(t) },
+      { rel: 'coverage/cobertura.xml', parse: (t) => parseCoberturaXml(t) },
+    ];
+    for (const { rel: covRel, parse } of extra) {
+      const p = path.join(folder, covRel);
+      if (!fs.existsSync(p)) { continue; }
+      try {
+        const entry = match(parse(fs.readFileSync(p, 'utf8'))?.files);
+        if (entry) { uncovered = entry.uncoveredLines; source = covRel; break; }
+      } catch { /* try the next source */ }
     }
   }
   if (uncovered === null) {
-    vscode.window.showInformationMessage('AITestNova: no coverage data for this file. Run your tests with coverage first (e.g. jest --coverage, or go test -coverprofile=coverage/coverage.out), then run this command again.');
+    vscode.window.showInformationMessage('AITestNova: no coverage data for this file. Run your tests with coverage first (e.g. jest --coverage, go test -coverprofile=coverage/coverage.out, pytest --cov --cov-report=json:coverage/coverage.json, a JaCoCo report, or dotnet test with XPlat Code Coverage), then run this command again.');
     return;
   }
   if (!uncovered.length) {
@@ -769,6 +923,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aitestnova.generateForSurvivingMutants', generateForSurvivingMutants),
     vscode.commands.registerCommand('aitestnova.generatePlaywrightTests', () => generateE2ETests('playwright')),
     vscode.commands.registerCommand('aitestnova.generateCypressTests', () => generateE2ETests('cypress')),
+    vscode.commands.registerCommand('aitestnova.fixFailingTest', fixFailingTest),
+    vscode.commands.registerCommand('aitestnova.generateFromOpenApi', generateFromOpenApi),
+    vscode.commands.registerCommand('aitestnova.generatePropertyTests', generatePropertyForFunctionAtCursor),
+    vscode.commands.registerCommand('aitestnova.showPerFileCoverage', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); await providerRef?.handle({ type: 'perFileCoverage' }); }),
     vscode.commands.registerCommand('aitestnova.importTests', importTests),
     vscode.commands.registerCommand('aitestnova.exportTests', async () => { await vscode.commands.executeCommand('aitestnova.main.focus'); }),
     vscode.commands.registerCommand('aitestnova.commitTests', commitGeneratedTests),
